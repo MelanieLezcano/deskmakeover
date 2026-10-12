@@ -1,4 +1,4 @@
-import type { IconKind, IconKindBucket, KindPolicy } from '@/bridge/types'
+import type { IconKind, IconKindBucket, KindPolicy, Surface, Surfaces } from '@/bridge/types'
 import type { StringKey } from '@/lib/i18n'
 
 // The participation-policy bucketing (chief-UI/UX + owner 2026-07-09): three
@@ -56,4 +56,48 @@ export const BUCKET_NAME_KEY: Record<IconKindBucket, StringKey> = {
 export function kindParticipates(kind: IconKind, policy: KindPolicy): boolean {
   const bucket = kindBucket(kind)
   return bucket === null ? true : policy[bucket]
+}
+
+// ---- Surface participation (ADR-0024) — the second participation axis --------
+
+/** Every NEW write surface starts OPTED OUT (ADR-0024): consent to write the
+ *  taskbar / Start menu is granted explicitly, never inherited — deliberately
+ *  the OPPOSITE default of kindPolicy's participate-by-default. */
+export const DEFAULT_SURFACES: Surfaces = { taskbar: false, startMenu: false }
+
+/** The `surfaces` legs — a CLOSED whitelist (G11): only these keys exist, any
+ *  other key in a `surfaces` object is dropped on read (additive tolerance,
+ *  mirroring unknown kind buckets). */
+const SURFACE_KEYS = ['taskbar', 'startMenu'] as const satisfies readonly (keyof Surfaces)[]
+
+/** Whether an item on `surface` participates under `surfaces`. The desktop is
+ *  NEVER gated here — it is the app's core promise; kindPolicy governs it alone. */
+export function surfaceParticipates(surface: Surface, surfaces: Surfaces): boolean {
+  switch (surface) {
+    case 'desktop':
+      return true
+    case 'taskbar':
+      return surfaces.taskbar
+    case 'startMenu':
+      return surfaces.startMenu
+  }
+}
+
+/** G11 normalizer for a recipe's `surfaces` leg: undefined → undefined (absent
+ *  — a style-only preset stays clean); null/non-object → null (REJECT the
+ *  recipe, never render garbage); unknown keys dropped; a KNOWN key with a
+ *  non-boolean value rejects the whole leg. Missing known legs default off
+ *  (opt-in consent must never be inferred). */
+export function normalizeSurfaces(raw: unknown): Surfaces | undefined | null {
+  if (raw === undefined) return undefined
+  if (raw === null || typeof raw !== 'object') return null
+  const src = raw as Record<string, unknown>
+  const out: Surfaces = { ...DEFAULT_SURFACES }
+  for (const key of SURFACE_KEYS) {
+    const v = src[key]
+    if (v === undefined) continue
+    if (typeof v !== 'boolean') return null
+    out[key] = v
+  }
+  return out
 }

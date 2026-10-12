@@ -23,7 +23,7 @@ pub use elevated::{
 };
 pub use error::{PortError, PortResult};
 pub use fingerprint::Fingerprint;
-pub use item::{DesktopItem, IconRef, IconSourceKind, ItemId, ItemKind, ItemState, ItemTarget};
+pub use item::{DesktopItem, IconRef, IconSourceKind, ItemId, ItemKind, ItemState, ItemSurface, ItemTarget};
 pub use source::{
     FileId, IconLocationState, PackageState, SourceFingerprint, SourceIdentity, TargetState,
 };

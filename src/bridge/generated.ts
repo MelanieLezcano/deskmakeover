@@ -145,6 +145,13 @@ export type IconItemDto = {
 	 *  no locale, so it must never emit display text here (an English user saw Chinese otherwise).
 	 */
 	statusReason: string | null,
+	/**  Which shell surface this item was observed on (ADR-0024). Absent ⇒ `desktop`. */
+	surface?: SurfaceDto,
+	/**
+	 *  Start menu subfolder RELATIVE to the programs root (`""` at the root; always `""` for
+	 *  desktop/taskbar items) — the mirror groups Start menu tiles by it. Absent ⇒ `""`.
+	 */
+	parent?: string,
 	x: number,
 	y: number,
 	/**
@@ -387,6 +394,14 @@ export type SettingsPatch = {
 	keepNewIconsStyled?: boolean | null,
 	wallpaperCoachShown?: boolean | null,
 };
+
+/**
+ *  WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
+ *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Serialized camelCase
+ *  to match the TS union `'desktop' | 'taskbar' | 'startMenu'`. `#[serde(default)]` reads an
+ *  absent field as `Desktop`, so a downgraded/older host degrades to the classic surface.
+ */
+export type SurfaceDto = "desktop" | "taskbar" | "startMenu";
 
 /**
  *  Environment snapshot for the diagnostics report (mirrors the TS `SystemInfoDto`). Returned by

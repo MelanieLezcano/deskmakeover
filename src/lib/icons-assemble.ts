@@ -15,17 +15,21 @@ import type {
   KindPolicy,
   LookVersionDto,
   PresetDto,
+  Surfaces,
   TypeOverrides,
 } from '@/bridge/types'
-import { DEFAULT_KIND_POLICY } from '@/lib/kind-policy'
+import { DEFAULT_KIND_POLICY, DEFAULT_SURFACES } from '@/lib/kind-policy'
 import { parseIconLook } from '@/lib/icon-look'
 import { typeOverridesEqual } from '@/lib/type-config'
 
-/** The three global knobs a saved appearance recipe carries (store ②③, spec 07 §8.2). */
+/** The knobs a saved appearance recipe carries (store ②③, spec 07 §8.2): the
+ *  look (`config` + `typeOverrides`) and the TWO participation axes — kindPolicy
+ *  (which kinds) and surfaces (which shell surfaces, ADR-0024). */
 export interface IconStyleRecipe {
   config: ConfigDto
   kindPolicy: KindPolicy
   typeOverrides: TypeOverrides
+  surfaces: Surfaces
 }
 
 // ---- Preset collection v3 (OWNER-CURATED, hand-tuned exports 2026-07-16) ----
@@ -168,6 +172,7 @@ export function defaultRecipe(kindPolicy: KindPolicy): IconStyleRecipe {
     config: { ...BASE_CONFIGS[DEFAULT_PRESET_ID] },
     kindPolicy: { ...kindPolicy },
     typeOverrides: structuredClone(PRESET_TYPE_OVERRIDES[DEFAULT_PRESET_ID] ?? {}),
+    surfaces: { ...DEFAULT_SURFACES },
   }
 }
 
@@ -194,6 +199,7 @@ export function parseHistory(history: LookVersionDto[], savedStyleJson: string |
       isCurrent: savedStyleJson !== null && v.styleJson === savedStyleJson,
       config: recipe?.config ?? { ...BASE_CONFIGS[DEFAULT_PRESET_ID] },
       kindPolicy: recipe?.kindPolicy ?? { ...DEFAULT_KIND_POLICY },
+      surfaces: recipe?.surfaces ?? { ...DEFAULT_SURFACES },
       typeOverrides: recipe?.typeOverrides ?? {},
     }
   })
@@ -280,6 +286,7 @@ export function assembleIconsState(args: {
     grid: iconGrid(draft.config.size, gridMetrics),
     wallpaperUrl,
     kindPolicy: { ...draft.kindPolicy },
+    surfaces: { ...draft.surfaces },
     typeOverrides: structuredClone(draft.typeOverrides),
     arrowOverlay: persisted.arrowOverlay,
     activeUserProfiles: persisted.activeUserProfiles,

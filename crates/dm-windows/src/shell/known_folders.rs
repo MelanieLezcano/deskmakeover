@@ -7,8 +7,8 @@ use dm_domain::{PortError, PortResult};
 use windows::core::GUID;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
-    SHGetKnownFolderPath, FOLDERID_Desktop, FOLDERID_ProgramData, FOLDERID_PublicDesktop,
-    KF_FLAG_DEFAULT,
+    SHGetKnownFolderPath, FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Programs,
+    FOLDERID_ProgramData, FOLDERID_PublicDesktop, FOLDERID_RoamingAppData, KF_FLAG_DEFAULT,
 };
 
 /// The desktop roots LABELED by identity: `(user desktop, public desktop)`. The USER desktop is
@@ -66,6 +66,37 @@ pub fn privileged_roots() -> Option<(PathBuf, PathBuf)> {
     let public = known_folder(&FOLDERID_PublicDesktop).ok().flatten()?;
     let programdata = known_folder(&FOLDERID_ProgramData).ok().flatten()?;
     Some((public, programdata))
+}
+
+/// The taskbar PIN root for the taskbar surface (ADR-0024): the folder Explorer stores the user's
+/// pinned taskbar shortcuts in. Resolved from `FOLDERID_RoamingAppData` + the documented suffix —
+/// never a fully hardcoded path (spec 07 §3). Best-effort by contract: `None` when the folder does
+/// not resolve, so a locked-down edition narrows the SURFACES covered instead of failing the scan.
+///
+/// [WINDOWS-VERIFY] runtime.
+pub fn taskbar_pin_root() -> Option<PathBuf> {
+    let base = known_folder(&FOLDERID_RoamingAppData).ok().flatten()?;
+    let root = base.join(r"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
+    root.is_dir().then_some(root)
+}
+
+/// The Start menu program roots for the start-menu surface (ADR-0024): `(user, all-users)`, both
+/// plain `SHGetKnownFolderPath` known folders (no suffix). Order is stable — user first, so an
+/// all-users failure can never displace it (the R-vanish labeling lesson, per root). Both legs are
+/// best-effort: a missing root narrows the surface instead of failing the scan; the all-users leg
+/// classifies `PrivilegedScope::ProgramData` downstream and rides the existing elevated batch.
+///
+/// [WINDOWS-VERIFY] runtime.
+pub fn start_menu_roots_labeled() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for id in [&FOLDERID_Programs, &FOLDERID_CommonPrograms] {
+        match known_folder(id) {
+            Ok(Some(path)) if path.is_dir() => roots.push(path),
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+    }
+    roots
 }
 
 fn known_folder(id: &GUID) -> PortResult<Option<PathBuf>> {

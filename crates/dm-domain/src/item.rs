@@ -131,6 +131,23 @@ impl ItemTarget {
     }
 }
 
+/// WHICH shell surface a scanned item was observed on (ADR-0024, fork draft): the desktop grid,
+/// a taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Every constructor
+/// states its surface explicitly — the default is never implicit, so a new scan root cannot
+/// silently masquerade as desktop truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ItemSurface {
+    Desktop,
+    Taskbar,
+    StartMenu,
+}
+
+impl Default for ItemSurface {
+    fn default() -> Self {
+        ItemSurface::Desktop
+    }
+}
+
 /// A scanned desktop item, mirroring `Core/DesktopItem.cs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopItem {
@@ -138,6 +155,11 @@ pub struct DesktopItem {
     pub name: String,
     pub path: String,
     pub kind: ItemKind,
+    /// Which shell surface this item was observed on (ADR-0024).
+    pub surface: ItemSurface,
+    /// Start menu subfolder RELATIVE to the programs root (`""` at the root; always `""` for
+    /// desktop/taskbar items) — the mirror groups Start menu tiles by it.
+    pub parent: String,
     pub icon: Option<IconRef>,
     pub state: ItemState,
     pub requires_explicit_consent: bool,
@@ -210,6 +232,8 @@ mod tests {
             name: "App".into(),
             path: r"C:\Desktop\App.lnk".into(),
             kind: ItemKind::Shortcut,
+            surface: ItemSurface::Desktop,
+            parent: String::new(),
             icon: None,
             state: ItemState::Ready,
             requires_explicit_consent: false,
@@ -310,6 +334,8 @@ mod tests {
             name: "n".into(),
             path: "p".into(),
             kind,
+            surface: ItemSurface::Desktop,
+            parent: String::new(),
             icon: None,
             state,
             requires_explicit_consent: false,

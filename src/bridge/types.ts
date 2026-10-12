@@ -24,7 +24,10 @@
 // PresetPackageReadDto / PresetEntryDto / PresetSaveDto (dm-contracts); library thumbnails ride
 // the scoped dmpreset:// protocol. Rust owns structure/security; payload SEMANTICS stay with the
 // ONE TS validator (lib/icon-look), so readPackage is PURE and save is the only library writer.
-export const BRIDGE_SCHEMA_VERSION = 10
+// Schema 11 (ADR-0024, fork draft): shell-surface labels on IconItemDto (surface/parent) — the
+// scan now reports taskbar pins + Start menu shortcuts alongside the desktop, and the wire
+// distinguishes them with a labeled union instead of path inference.
+export const BRIDGE_SCHEMA_VERSION = 11
 
 // Preset package DTOs (schema 9) are consumed straight from the generated
 // contract — they carry no frontend-only fields, so a hand mirror would be
@@ -211,6 +214,18 @@ export type IconKindBucket = 'App' | 'Folder' | 'File'
  *  on the module state. Cascade: styleable:false > per-icon override > kindPolicy. */
 export type KindPolicy = Record<IconKindBucket, boolean>
 
+/** Per-surface "participate in beautify?" (ADR-0024, fork draft): the SECOND
+ *  participation axis, ORTHOGONAL to kindPolicy — kindPolicy asks WHICH KINDS,
+ *  this asks WHICH SHELL SURFACES. The desktop itself is not a leg (it is
+ *  always on — the app's core promise, governed by kindPolicy alone); the two
+ *  NEW write surfaces each default false: consent to write the taskbar /
+ *  Start menu is opt-in, never inherited by an existing recipe. Not part of
+ *  ConfigDto (same rule as kindPolicy) — rides the recipe's 4th key. */
+export interface Surfaces {
+  taskbar: boolean
+  startMenu: boolean
+}
+
 /** The per-type style envelope (ADR-0017 D3): ONLY these axes may differ by
  *  type — shape (the findability axis), saliency (colorMode limited to the
  *  desaturation family — never Original islands), its tint/band companions,
@@ -247,6 +262,11 @@ export interface TypeOverrideEntry {
  *  a look switch swaps the whole ladder coherently. */
 export type TypeOverrides = Partial<Record<IconKindBucket, TypeOverrideEntry>>
 
+/** WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
+ *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Mirrors the generated
+ *  `SurfaceDto` union; the hand mirror keeps the frontend-owned `IconItemDto` self-contained. */
+export type Surface = 'desktop' | 'taskbar' | 'startMenu'
+
 /** One desktop item (icons contract v2, spec 06 §2): the web renders styling
  *  locally from `sourceUrls` (256px, [0] primary; RecycleBin ships TWO —
  *  empty + full). Positions are OBSERVED desktop truth, never predicted. */
@@ -258,6 +278,11 @@ export interface IconItemDto {
   styleable: boolean
   /** Host-localized human reason when styleable is false (e.g. UWP). */
   statusReason: string | null
+  /** Which shell surface this item was observed on (ADR-0024). */
+  surface: Surface
+  /** Start menu subfolder RELATIVE to the programs root (`""` at the root; always `""` for
+   *  desktop/taskbar items) — the mirror groups Start menu tiles by it. */
+  parent: string
   x: number
   y: number
   sourceUrls: string[]
@@ -279,9 +304,11 @@ export interface HistoryEntryDto {
   label: string
   isCurrent: boolean
   /** v2: entries carry their FULL recipe so 回到此版 re-bakes locally + restores the same
-   *  participation policy — config + typeOverrides + kindPolicy, the three ② knobs (spec 07 §8.2). */
+   *  participation policy — config + typeOverrides + kindPolicy + surfaces (the recipe's
+   *  participation knobs, spec 07 §8.2 + ADR-0024). */
   config: ConfigDto
   kindPolicy: KindPolicy
+  surfaces: Surfaces
   typeOverrides: TypeOverrides
 }
 
@@ -309,6 +336,9 @@ export interface IconsStateDto {
   /** Per-bucket participation policy (schema v3). Persisted via setLook; the
    *  host + future auto-format read the same map. Default: every bucket true. */
   kindPolicy: KindPolicy
+  /** Per-surface participation (ADR-0024): which SHELL SURFACES the look writes.
+   *  Default false per leg — opt-in consent. The desktop is always on (not a leg). */
+  surfaces: Surfaces
   /** Per-type style overrides (ADR-0017) — the look's type ladder. */
   typeOverrides: TypeOverrides
   /** [M6-WIRE] Native shortcut-arrow state (ADR-0021 machine-wide overlay).

@@ -48,6 +48,19 @@ pub enum IconKindDto {
     Unsupported,
 }
 
+/// WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
+/// taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Serialized camelCase
+/// to match the TS union `'desktop' | 'taskbar' | 'startMenu'`. `#[serde(default)]` reads an
+/// absent field as `Desktop`, so a downgraded/older host degrades to the classic surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SurfaceDto {
+    #[default]
+    Desktop,
+    Taskbar,
+    StartMenu,
+}
+
 /// One desktop item as the scanner observed it — raw platform truth ONLY (no override, no style).
 /// The frontend overlays its own draft per-icon overrides + renders the styling locally from
 /// `sourceUrls` (256px, `[0]` primary; the Recycle Bin ships TWO — empty + full). Positions are
@@ -66,6 +79,13 @@ pub struct IconItemDto {
     /// error detail) is `\t`-joined with it: `"Icons_Reason_ExtractFailed\t<detail>"`. The host has
     /// no locale, so it must never emit display text here (an English user saw Chinese otherwise).
     pub status_reason: Option<String>,
+    /// Which shell surface this item was observed on (ADR-0024). Absent ⇒ `desktop`.
+    #[serde(default)]
+    pub surface: SurfaceDto,
+    /// Start menu subfolder RELATIVE to the programs root (`""` at the root; always `""` for
+    /// desktop/taskbar items) — the mirror groups Start menu tiles by it. Absent ⇒ `""`.
+    #[serde(default)]
+    pub parent: String,
     pub x: i32,
     pub y: i32,
     /// The item's 256px source URL(s) the compositor renders from; `[0]` is primary. The Recycle
@@ -219,6 +239,29 @@ mod tests {
     }
 
     #[test]
+    fn surface_serializes_as_the_ts_literals() {
+        for (variant, literal) in [
+            (SurfaceDto::Desktop, "\"desktop\""),
+            (SurfaceDto::Taskbar, "\"taskbar\""),
+            (SurfaceDto::StartMenu, "\"startMenu\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), literal);
+            assert_eq!(serde_json::from_str::<SurfaceDto>(literal).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn a_pre_surface_item_json_reads_as_desktop_with_an_empty_parent() {
+        // A schema-10 payload (no `surface`/`parent` keys) must deserialize to the classic
+        // surface — the fields are additive wire data, never a breaking shape change
+        // (ADR-0024; downgrade tolerance for an older host's cached/echoed DTOs).
+        let legacy = r#"{"id":"abc","label":"App","kind":"Shortcut","isShortcut":true,"styleable":true,"statusReason":null,"x":14,"y":62,"sourceUrls":["dmicon://abc/0"]}"#;
+        let item: IconItemDto = serde_json::from_str(legacy).unwrap();
+        assert_eq!(item.surface, SurfaceDto::Desktop);
+        assert_eq!(item.parent, "");
+    }
+
+    #[test]
     fn item_uses_camel_case_keys_and_no_override_fields() {
         let item = IconItemDto {
             id: "abc".into(),
@@ -227,6 +270,8 @@ mod tests {
             is_shortcut: true,
             styleable: true,
             status_reason: None,
+            surface: SurfaceDto::Desktop,
+            parent: String::new(),
             x: 14,
             y: 62,
             source_urls: vec!["dmicon://abc/0".into()],
@@ -260,6 +305,9 @@ mod tests {
                 is_shortcut: false,
                 styleable: true,
                 status_reason: None,
+                // Exercise the NON-default surface: Start menu items carry their relative parent.
+                surface: SurfaceDto::StartMenu,
+                parent: "WinRAR".into(),
                 x: 0,
                 y: 0,
                 // Recycle Bin ships two sources (empty + full).

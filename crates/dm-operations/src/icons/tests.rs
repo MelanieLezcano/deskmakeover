@@ -4,7 +4,7 @@
 //! files and the apply drives the real transaction engine.
 
 use dm_contracts::IconStyle;
-use dm_domain::{DesktopItem, ItemId, ItemKind, ItemState};
+use dm_domain::{DesktopItem, ItemId, ItemKind, ItemState, ItemSurface};
 use serde_json::json;
 
 use super::*;
@@ -33,6 +33,8 @@ fn item(id: &str, kind: ItemKind) -> DesktopItem {
         name: id.into(),
         path: format!("C:/Desktop/{id}"),
         kind,
+        surface: ItemSurface::Desktop,
+        parent: String::new(),
         icon: None,
         state: ItemState::Ready,
         requires_explicit_consent: false,
@@ -1337,6 +1339,8 @@ fn pub_item(id: &str) -> DesktopItem {
         name: id.into(),
         path: format!("C:/Users/Public/Desktop/{id}"),
         kind: ItemKind::Shortcut,
+        surface: ItemSurface::Desktop,
+        parent: String::new(),
         icon: None,
         state: ItemState::Ready,
         requires_explicit_consent: false,

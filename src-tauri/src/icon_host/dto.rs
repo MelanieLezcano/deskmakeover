@@ -1,7 +1,9 @@
 //! DTO mapping: recipe (de)serialization, look-history + kind mapping, and the persisted-state DTO.
 
-use dm_contracts::{ArrowOverlayDto, IconKindDto, IconPersistedDto, IconStyle, LookVersionDto};
-use dm_domain::ItemKind;
+use dm_contracts::{
+    ArrowOverlayDto, IconKindDto, IconPersistedDto, IconStyle, LookVersionDto, SurfaceDto,
+};
+use dm_domain::{ItemKind, ItemSurface};
 use dm_operations::{IconStoreState, LookVersion};
 
 use super::IconHost;
@@ -36,6 +38,17 @@ pub(super) fn map_kind(k: ItemKind) -> IconKindDto {
         ItemKind::RegularFile => IconKindDto::RegularFile,
         ItemKind::System => IconKindDto::SystemIcon,
         ItemKind::Unsupported => IconKindDto::Unsupported,
+    }
+}
+
+/// Maps the domain surface onto the wire literal (ADR-0024): three labeled variants the TS union
+/// mirrors. `parent` stays a separate flat field the scanner already set — this fns only decides
+/// WHICH surface an item claims.
+pub(super) fn map_surface(surface: ItemSurface) -> SurfaceDto {
+    match surface {
+        ItemSurface::Desktop => SurfaceDto::Desktop,
+        ItemSurface::Taskbar => SurfaceDto::Taskbar,
+        ItemSurface::StartMenu => SurfaceDto::StartMenu,
     }
 }
 
