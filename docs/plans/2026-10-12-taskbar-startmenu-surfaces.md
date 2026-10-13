@@ -75,8 +75,8 @@ surface never requires a rescan.
 
 ```ts
 surfaces: { desktop: true /* always-on, not user-toggleable */,
-            taskbar: boolean,          // default FALSE (opt-in)
-            startMenu: boolean }       // default FALSE (opt-in)
+            taskbar: boolean,          // default TRUE (owner decision 2026-10-12)
+            startMenu: boolean }       // default TRUE (owner decision 2026-10-12)
 ```
 
 Persisted through the SAME channel as `kindPolicy` (`icons.setLook` →
@@ -207,6 +207,174 @@ every existing port.
     sections + gates run + the 5 owner invariants; adversarial review on
     ledger/CAS/parity. Expect deferral (write-surface reliability is the owner's
     dominant ship risk) — the fork carries the feature until then.
+11. **MSIX AppListEntry wrappers** (owner directive 2026-10-12 "solve Store-app
+    icons"; recipe owner-verified on-box — see field findings below): the virtual
+    Start entries become styleable through OWNED wrapper shortcuts, never package
+    mutation:
+    - **Scan synthesizes** one item per `FOLDERID_AppsFolder` entry with no
+      file-backed `.lnk` in either Programs root: `kind = AppxShortcut` (free — the
+      walker never emits it today), `surface = startMenu`, `parent = ""`,
+      `path = <user Programs root>\<DisplayName>.lnk` (prospectual: the file does
+      not exist yet; id = `ItemId::from_source_path` as usual). The AUMID is
+      resolved LIVE — at scan for extraction, at write for creation — by display
+      name → AppsFolder lookup. **No new `IconItemDto` field; schema stays 11.**
+    - **Extraction — THE SOURCE GLYPH**: the wrapper's source must be the APP's own
+      icon, never the wrapper's current `IconLocation` (a probe pointing at an
+      arbitrary asset renders that arbitrary glyph — verified on-box: terminal glyph
+      on WhatsApp). Rule: an item is `AppxShortcut` iff its shortcut args parse
+      `shell:AppsFolder\<AUMID>` (classify.rs gains this parse; synthesized items
+      take the AUMID from the AppsFolder display-name match) → extractor resolves
+      `SHCreateItemFromRelativeName(FOLDERID_AppsFolder, AUMID)` and renders via
+      `IShellItemImageFactory::GetImage` (reuse the `shell_item_image` → bytes
+      tail). File-backed appsFolder shortcuts extract by AUMID too — falling back to
+      their `IconLocation` would perpetuate whatever it already points at.
+    - **AUMID round-trip on write**: `set_icon_location` (Load → SetIconLocation →
+      Save) MUST preserve the property-store block carrying
+      `System.AppUserModel.ID` — without the AUMID the running-window lookup falls
+      back to the process exe and the pin goes green again. Assert in a test:
+      set AUMID → rewrite icon → re-read AUMID == unchanged; fix the writer
+      (re-apply the property after IShellLink::Save, or round-trip the store) if
+      Save drops the block.
+    - **State reader**: `AppxShortcut` with an absent wrapper skips
+      `require_exists` (the System-CLSID precedent) → fresh + styleable; when the
+      wrapper exists it reads like any `.lnk` (`IconRef`) so re-apply CAS keeps
+      chaining. Fingerprint for "absent" = a dedicated sentinel (like the virtual
+      recycle-bin state), stable both directions.
+    - **Write**: `shell_link::create_appx_shortcut(path, aumid, icon)` —
+      `IShellLink` (target `%SystemRoot%\explorer.exe`,
+      args `shell:AppsFolder\<AUMID>`, icon location, ownership marker) then
+      `IPropertyStore::SetValue(PKEY_AppUserModel_ID, GPS_READWRITE)`. The AUMID
+      property is THE mechanism: Windows merges the wrapper with the virtual entry
+      (2 rows → 1) and renders the wrapper's icon.
+    - **[WINDOWS-VERIFY] Launch path — VERIFY ON BOX BEFORE SHIP**: the icon
+      merge/render does NOT depend on the wrapper's target, but clicking DOES.
+      On the owner's machine `explorer.exe shell:AppsFolder\<AUMID>` does not
+      activate apps (3 attempts with Calculator → no process; the owner's
+      busy-cursor loop when clicking the probe wrapper = this exact recipe),
+      while `IApplicationActivationManager::ActivateApplication` (CLSID
+      `45BA127D-10A8-46EA-8AB7-56EA9078943C`, **IID
+      `2E941141-7F97-4756-BA1D-9DECDE894A3D`** — the widely-circulated
+      `2E97EF3E-…` is wrong → E_NOINTERFACE) returns S_OK and the app stays up.
+      The recipe is what Windows' own Store-app pins use → box-specific
+      breakage correlating with the pre-existing COM registration damage
+      (wallpaper bug `0x80040154`). Task 11 ships only after a wrapper is
+      clicked end-to-end on-box; if the explorer route still fails, disclose
+      (system repair `sfc /DISM` is out of repo scope) or re-target the
+      wrapper — do NOT silently ship an entry that renders but cannot launch.
+    - **Ledger / restore**: original = wrapper *Absent* → restore REMOVES the
+      wrapper (the `file_wrapper` Absent→`remove_file` precedent) → the package
+      icon returns. Zero package mutation; ADR-0024 Never-list intact.
+    - **Elevation: never** — wrappers always go in the USER Programs root (the
+      Start view merges both roots; verified per-user on-box), so the elevated
+      helper gains no new op.
+    - **Collisions**: a display name matching a walked `.lnk` stem → skip (the
+      classic item covers it); two virtual apps sharing one display name → second
+      skipped + scan warn (honest, logged).
+    - **Tests**: synthesis (injected AppsFolder fixture), absent→styleable state
+      reader, wrapper create + property-store + restore round-trip, ledger anchor
+      round-trip, `commit_apply` path for `AppxShortcut` (unelevated), collision
+      skips. Docs: ADR-0024 records the sanctioned wrapper recipe; the
+      "silently-absent badge" follow-up is superseded by this task.
+
+## [WINDOWS-VERIFY] field findings — live pass 2026-10-12 (owner box)
+
+Verified ✅ (dev loop, `bun run tauri:dev` + `DESKMAKEOVER_ALLOW_UNSIGNED_HELPER=1`):
+
+- Pipeline end-to-end with surfaces ON: scan 103 items / 104 jobs → bake → 6 chunks
+  → CAS commit → `restart_shell` → **`commit ok=true`**, including the elevated
+  ProgramData batch (user-scope items unelevated; ONE batched UAC approved).
+- On-disk rewrites confirmed by hand: taskbar pins (`User Pinned\TaskBar\*.lnk`) and
+  Start-menu shortcuts (user + common) carry `IconLocation` →
+  `icon-assets/{hash}.ico`; re-applies stay idempotent (re-own via ledger).
+- Initial hang root-caused: a fresh clone lacks the gitignored
+  `public/dm_icon_wasm.wasm` (only `bun run wasm` writes it) → worker init rejects →
+  the FIFO enqueue chain swallowed the rejection → zero `sourceReady` acks → `apply`
+  waited forever on the last `bake:ok`.
+
+Honest exceptions measured on-box:
+
+- **MSIX package Start entries are AppListEntries with NO file-backed shortcut** →
+  invisible to the file scan by design (Never-list: package-asset edits break the
+  package signature). **7 of 97** Start entries here: *Click to Do · Configuración ·
+  Copias de seguridad de Windows · Introducción · Reloj · Trello · WhatsApp*. The
+  other 90 are `.lnk`-backed and restyle (owner spot-check: only Trello/WhatsApp
+  reported unchanged).
+- **[BREAKTHROUGH, owner-verified 2026-10-12] MSIX wrapper recipe works**: a probe
+  `.lnk` in the user's Programs root with target `explorer.exe shell:AppsFolder\<AUMID>`
+  + `System.AppUserModel.ID` = the package AUMID (via `SHGetPropertyStoreFromParsingName`
+  with `GPS_READWRITE` → `PKEY_AppUserModel_ID` = `{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5`)
+  + `IconLocation` = styled asset makes Windows MERGE it with the virtual AppListEntry
+  (Get-StartApps: 2 rows → **1 row** after the AUMID set) and the merged entry renders
+  **the wrapper's styled icon** (owner's eyes on the real Start menu, not just the
+  enumeration). Deleting the wrapper restores the package icon → reversible, no package
+  mutation. → Elevated to product scope as Task 11.
+- Running-app pins keep the exe icon while the app runs (issue #8 / ADR-0024
+  caveat). **Cold-pin repaint VERIFIED** (owner): Brave's pin had a styled `.lnk`
+  on disk but showed the original with the app closed after the first restart
+  (stale pin cache), and repainted to the styled icon after the next shell
+  restart — no AppUserModelID exception observed on-box.
+- **[2026-10-12 night] Probe teardown + launch-route finding**: the AUMID pin
+  probe made the running WhatsApp taskbar button render OUR asset (mechanism ✅ —
+  but an arbitrary placeholder glyph, terminal-derived: probes bypass extraction,
+  the correct glyph needs Task 11's `IShellItemImageFactory` source, see spec).
+  Launching then broke: clicking the probe wrapper (target = the standard
+  `explorer.exe shell:AppsFolder\…` recipe) spun a busy cursor and never opened
+  the app — same failure reproduces for Calculator via that route on this box,
+  while direct `IApplicationActivationManager::ActivateApplication` activates
+  WhatsApp fine (S_OK, stable process, window up). Probes (wrapper + pin)
+  deleted → Start back to 1 row, pins back to the original set; package
+  activation healthy. Lesson baked into Task 11: **two live shortcuts carrying
+  the same AUMID + a broken launch route = user-visible breakage — probes on the
+  real shell stay short-lived, and the wrapper's click-to-launch is a ship
+  gate** (spec bullet added).
+- Stray `File Explorer (2).lnk` in the pin folder = a manual user copy (19:16),
+  not ours — owner to delete or keep.
+
+- **Conflict test PASS (2026-10-12, CDP-driven UI)**: hand-edited `Brave.lnk`
+  (`imageres.dll,-109`) → apply → CAS conflict on that pin only, its bytes and
+  mtime untouched while the other ~100 items committed. The hand-edit rides the
+  restore-job path (`restores=1` → `restore_skipped` → counted as a conflict)
+  and also survives a later Restore (trust-first): skipped as a hand-edit until
+  the item's fingerprint again equals `original_fingerprint`.
+- **Restore test PASS (2026-10-12)**: apply → snapshot ledger → restore →
+  **94/94 verifiable FileBytes byte-identical** to `original_anchor.bytes`
+  (0 mismatches; the other 3 are files the user deleted long ago — rows healed
+  as NotFound, as designed), wrapper `.lnk` sidecars removed and the originals
+  un-hidden back to `Archive`, ledger 101 → 1 rows, `txn.log` 284 KB → 0
+  (checkpointed), zero `icon-assets` residue except the unmanaged
+  `File Explorer (2).lnk` stray.
+- **Vanish-residue heal verified**: the 3 wrapped loose files were found
+  Hidden|System with their sidecars already gone — a state the apply/restore
+  code order cannot produce (external deletion: old crash artifact or AV/user
+  cleanup). Recovery path: un-hide → Restore → the "already pristine" arm
+  drops the rows → next apply re-wraps cleanly; the re-wrapped→restored cycle
+  then came back byte-clean.
+- **jpg wrap race (open)**: wrapping `wp14409295-….jpg` failed 4/4 with
+  `0x80070005` at the attrs step — Explorer's thumbnail extraction locks the
+  target inside the sidecar→hide window, and the rollback (sidecar removal)
+  hits the same lock → `rollback-incomplete` txn. The recovery abort hit the
+  same denial twice before landing (`icons … finalize degraded` WARNs), which
+  **defers a restore until the abort clears** — correct but loud. Arithmetic
+  match: the owner's historical `99 committed + restores=3 (+1)` gap is this
+  same item. Disposition: marked **keep original** via the per-item override so
+  applies run clean (`ok=true`, CTA In-sync); proposed fix (out of v1): retry
+  `attrs::set` with backoff on `0x80070005` in `file_wrapper::apply`.
+- **3 steady apply conflicts (open observation)**: every CDP apply reported
+  `3 conflicts` (the owner's historical runs show none). The UI/event exposes
+  the count only, so the ids are unattributed; every directly-inspected item
+  is styled and the applies end `ok=true`/In-sync. Needs a conflict-id log
+  line or event payload before it can be chased.
+- **Test harness note**: WebView2 Runtime 150+ drops `WEBVIEW2_*` env vars for
+  elevated hosts (WebView2Feedback #5645) — CDP for the elevated dev app was
+  brought up via the HKLM policy `AdditionalBrowserArguments`
+  (`--remote-debugging-port=9222`), removed again after the pass. Permanent
+  dev-loop suggestion: a non-elevated CDP mode or a scripted test bridge.
+
+Remaining checklist: hand-edit a pin → CAS conflict untouched ✅ (2026-10-12) ·
+restore → byte-identical FileBytes on pins/Start ✅ (2026-10-12: 94/94) ·
+uninstall residue `[pending]` · dev-loop hardening ✅ (worker posts
+`ok:false`/`png:null` failure acks instead of swallowing init rejection;
+TEMP-DEBUG markers removed; `**/target/**` vite watch ignore landed).
 
 ## Follow-ups (documented, out of v1)
 
@@ -218,3 +386,6 @@ every existing port.
   badge once [WINDOWS-VERIFY] measures which app classes repaint.
 - Common Start Menu per-item UAC-free path if the helper grows per-surface
   batching (today: one batched UAC, already disclosed).
+- MSIX package Start entries: ~~non-stylable badge in the mirror~~ **superseded by
+  Task 11** (owned wrappers make them styleable; the badge idea applies only to
+  entries Task 11 cannot match).
