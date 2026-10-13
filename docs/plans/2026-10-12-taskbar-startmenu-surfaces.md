@@ -223,29 +223,43 @@ every existing port.
       arbitrary asset renders that arbitrary glyph — verified on-box: terminal glyph
       on WhatsApp). Rule: an item is `AppxShortcut` iff its shortcut args parse
       `shell:AppsFolder\<AUMID>` (classify.rs gains this parse; synthesized items
-      take the AUMID from the AppsFolder display-name match) → extractor resolves
-      `SHCreateItemFromRelativeName(FOLDERID_AppsFolder, AUMID)` and renders via
-      `IShellItemImageFactory::GetImage` (reuse the `shell_item_image` → bytes
-      tail). File-backed appsFolder shortcuts extract by AUMID too — falling back to
-      their `IconLocation` would perpetuate whatever it already points at.
-    - **AUMID round-trip on write**: `set_icon_location` (Load → SetIconLocation →
-      Save) MUST preserve the property-store block carrying
-      `System.AppUserModel.ID` — without the AUMID the running-window lookup falls
-      back to the process exe and the pin goes green again. Assert in a test:
-      set AUMID → rewrite icon → re-read AUMID == unchanged; fix the writer
-      (re-apply the property after IShellLink::Save, or round-trip the store) if
-      Save drops the block.
+      take the AUMID from the AppsFolder display-name match) → the extractor builds
+      the AppsFolder `IShellItem` (`SHCreateItemFromParsingName("shell:AppsFolder")`
+      — `SHCreateItemFromRelativeName` takes that **IShellItem parent**, NOT a
+      `FOLDERID`), resolves the child by AUMID (relative-name first, full
+      `shell:AppsFolder\<AUMID>` parsing-name fallback) and renders via
+      `IShellItemImageFactory::GetImage` through the shared `factory_icon_image`
+      tail (same pixel contract as every shell-item read). File-backed appsFolder
+      shortcuts extract by AUMID too — falling back to their `IconLocation` would
+      perpetuate whatever it already points at.
+    - **AUMID round-trip on write** ✅ *(implemented + pinned by test)*:
+      `set_icon_location` (Load → SetIconLocation → Save) reads the AUMID up
+      front (by-path read on the real `.lnk` — `SHGetPropertyStoreFromParsingName`
+      + `GPS_READWRITE`, best-effort: an ordinary shortcut has none) and
+      re-attaches it to the loaded ShellLink OBJECT (QI `IPropertyStore` →
+      `SetValue(PKEY_AppUserModel_ID, VT_LPWSTR)` → `Commit`) BEFORE the single
+      `Save`, so link + property block publish atomically — without the AUMID the
+      running-window lookup falls back to the process exe and the pin goes green
+      again. A by-path write is impossible on the save target: it is a
+      `.tmp`-named claim-temp with no shell property handler
+      (`SHGetPropertyStoreFromParsingName` fails on it — verified on-box, E_FAIL),
+      and a two-step save-then-write could strand an un-merged wrapper. Test:
+      create wrapper → rewrite icon → AUMID/args/marker unchanged
+      (`shell_link::tests::appx_wrapper_round_trips…`), green on-box.
     - **State reader**: `AppxShortcut` with an absent wrapper skips
       `require_exists` (the System-CLSID precedent) → fresh + styleable; when the
       wrapper exists it reads like any `.lnk` (`IconRef`) so re-apply CAS keeps
       chaining. Fingerprint for "absent" = a dedicated sentinel (like the virtual
       recycle-bin state), stable both directions.
-    - **Write**: `shell_link::create_appx_shortcut(path, aumid, icon)` —
-      `IShellLink` (target `%SystemRoot%\explorer.exe`,
-      args `shell:AppsFolder\<AUMID>`, icon location, ownership marker) then
-      `IPropertyStore::SetValue(PKEY_AppUserModel_ID, GPS_READWRITE)`. The AUMID
-      property is THE mechanism: Windows merges the wrapper with the virtual entry
-      (2 rows → 1) and renders the wrapper's icon.
+    - **Write**: `shell_link::create_appx_shortcut(path, aumid, icon)` — ONE
+      `IShellLink` object: target `%SystemRoot%\explorer.exe` (expanded from the
+      env var), args `shell:AppsFolder\<AUMID>`, icon location, ownership marker
+      `DeskMakeover:appx-wrapper:v1` (distinct from the file-wrapper marker —
+      reunification never claims it), then `IPropertyStore` (QI from the SAME
+      link object) → `SetValue(PKEY_AppUserModel_ID, VT_LPWSTR)` → `Commit`,
+      then ONE `IPersistFile::Save` (claim-temp + finalize, crash-safe like every
+      writer). The AUMID property is THE mechanism: Windows merges the wrapper
+      with the virtual entry (2 rows → 1) and renders the wrapper's icon.
     - **[WINDOWS-VERIFY] Launch path — VERIFY ON BOX BEFORE SHIP**: the icon
       merge/render does NOT depend on the wrapper's target, but clicking DOES.
       On the owner's machine `explorer.exe shell:AppsFolder\<AUMID>` does not
@@ -275,6 +289,25 @@ every existing port.
       round-trip, `commit_apply` path for `AppxShortcut` (unelevated), collision
       skips. Docs: ADR-0024 records the sanctioned wrapper recipe; the
       "silently-absent badge" follow-up is superseded by this task.
+    - **Status 2026-10-13 — implemented, gates green, on-box ship gate
+      pending**: all Task 11 code landed (scan args-classification + pure
+      synthesis hook; `shell/appsfolder.rs` enumerate/resolve/shell-item/glyph;
+      state-reader `AppxAbsent` fingerprint + `FileAbsent` anchor split;
+      `apply_appx` create-or-rewrite + `remove`; extraction early-return via the
+      shared `factory_icon_image`; AUMID-preserving writer; fake-world virtual
+      model). Gates on-box: `cargo test --workspace` 0 failures (dm-windows
+      137, dm-domain 59, dm-operations 230), `bun test`/`tsc`/lint/bindings
+      green. The two ops orchestration tests live in the Mac-gated
+      `icons/tests.rs` (`#[cfg(all(test, not(windows)))]`, repo convention):
+      verified once by lifting that gate (272/272, both AppxShortcut flows
+      pass), gate restored to a zero-diff state after. **Remaining ship gate
+      (on-box)**: enumeration pin (WhatsApp AUMID literal), scan shows the
+      synthesized count on the dev box, and click-to-launch end-to-end — if the
+      explorer route still fails, re-target the wrapper at
+      `deskmakeover-desktop.exe --activate-aumid <AUMID>`
+      (IApplicationActivationManager, proven on-box); do NOT ship an entry that
+      renders but cannot launch. Afterwards the HKLM WebView2
+      `AdditionalBrowserArguments` dev value is deleted (value + key form).
 
 ## [WINDOWS-VERIFY] field findings — live pass 2026-10-12 (owner box)
 
@@ -374,7 +407,10 @@ Remaining checklist: hand-edit a pin → CAS conflict untouched ✅ (2026-10-12)
 restore → byte-identical FileBytes on pins/Start ✅ (2026-10-12: 94/94) ·
 uninstall residue `[pending]` · dev-loop hardening ✅ (worker posts
 `ok:false`/`png:null` failure acks instead of swallowing init rejection;
-TEMP-DEBUG markers removed; `**/target/**` vite watch ignore landed).
+TEMP-DEBUG markers removed; `**/target/**` vite watch ignore landed) ·
+Task 11 on-box ship gates `[pending]` (enumeration pin · synthesized count in
+scan · click-to-launch end-to-end · then delete the HKLM WebView2
+`AdditionalBrowserArguments` dev value + key form).
 
 ## Follow-ups (documented, out of v1)
 

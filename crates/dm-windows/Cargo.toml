@@ -45,6 +45,10 @@ windows = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
+    # Task 11 (ADR-0024): Store/MSIX wrapper `.lnk` recipe — IPropertyStore +
+    # SHGetPropertyStoreFromParsingName + GPS_READWRITE to persist/read `System.AppUserModel.ID`
+    # (PKEY_APPUSERMODEL_ID) on the wrapper.
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     # Judge-1 desktop-activity precision layer (activity.rs): SetWinEventHook / UnhookWinEvent /

@@ -117,10 +117,81 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
             });
         }
     }
+    // Store/MSIX (AppsFolder) entries with no walked `.lnk` cover (Task 11, ADR-0024): a virtual
+    // Start-menu item per uncovered entry, so its icon becomes styleable through the wrapper
+    // recipe. A walked item's display name covering an entry means the classic `.lnk` (or our
+    // wrapper) already addresses that app — never synthesize a duplicate. Best-effort per root
+    // doctrine: a failed enumeration (locked-down shell) or a missing Programs root NARROWS the
+    // surface instead of failing the scan. [WINDOWS-VERIFY] runtime.
+    if let Ok(entries) = crate::shell::appsfolder::enumerate() {
+        if let Some(programs) = known_folders::user_programs_root() {
+            let walked: std::collections::HashSet<String> =
+                items.iter().map(|i| i.name.to_lowercase()).collect();
+            items.extend(synthesize_appx_items(&walked, &entries, &programs));
+        }
+    }
     // Oracle sorts by name, current-culture case-insensitive; ASCII-lowercase is the closest
     // portable approximation and is corrected on the Windows box if a locale diff surfaces.
     items.sort_by_key(|item| item.name.to_lowercase());
     Ok(items)
+}
+
+/// Synthesizes virtual Start-menu items for AppsFolder entries NOT already covered by a walked
+/// item name (Task 11). Pure — unit-tested on the Mac host; [`crate::shell::appsfolder`]
+/// enumerates the real list. Rules:
+/// * a display name matching any walked item (case-insensitive) → skip silently (the classic
+///   `.lnk` / our wrapper already covers that app);
+/// * a duplicate display name within the enumeration → first wins, later ones warn (the on-box
+///   probe found none, but the shell is third-party-extensible);
+/// * a display name that is not a safe file stem → skip + warn (the wrapper `.lnk` could never be
+///   created under it, so the prospective path would be a lie).
+/// The item's path is the PROSPECTIVE wrapper location `<user Programs root>\<DisplayName>.lnk` —
+/// the addressing anchor (ItemId) apply later writes to.
+fn synthesize_appx_items(
+    walked_names: &std::collections::HashSet<String>,
+    entries: &[crate::shell::appsfolder::AppsfolderEntry],
+    programs_root: &Path,
+) -> Vec<DesktopItem> {
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in entries {
+        let key = entry.display_name.to_lowercase();
+        if walked_names.contains(&key) {
+            continue;
+        }
+        if !seen.insert(key) {
+            log::warn!(
+                "appsfolder: duplicate display name {:?} skipped (first wins)",
+                entry.display_name
+            );
+            continue;
+        }
+        if !crate::classify::is_safe_file_stem(&entry.display_name) {
+            log::warn!(
+                "appsfolder: display name {:?} is not a safe file name; skipped",
+                entry.display_name
+            );
+            continue;
+        }
+        let path = programs_root.join(format!("{}.lnk", entry.display_name));
+        let path_str = match path.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        out.push(DesktopItem {
+            id: ItemId::from_source_path("filesystem", &path_str),
+            name: entry.display_name.clone(),
+            icon: None,
+            path: path_str,
+            kind: ItemKind::AppxShortcut,
+            surface: ItemSurface::StartMenu,
+            parent: String::new(),
+            state: ItemState::Ready,
+            requires_explicit_consent: false,
+            status_message: None,
+        });
+    }
+    out
 }
 
 /// Enumerate one root into `items`, honoring its surface + walk mode. The top-level `read_dir`
@@ -203,7 +274,7 @@ fn walk_dir(
             // and the desktop Folder taxonomy does not apply to it.
             continue;
         }
-        let kind = classify_entry(&file_name, is_dir);
+        let mut kind = classify_entry(&file_name, is_dir);
         let path_str = match path.to_str() {
             Some(s) => s.to_string(),
             None => continue,
@@ -221,6 +292,17 @@ fn walk_dir(
                 item.parent = parent.to_string();
                 items.push(item);
                 continue;
+            }
+            // A `.lnk` whose ARGUMENTS are the AppsFolder URI is a Store/UWP shortcut (Task 11) —
+            // the args are the only reliable signal. One extra COM Load per `.lnk`; a failed or
+            // garbage read (test fixtures included) leaves the item an ordinary Shortcut, never a
+            // scan error.
+            let is_appx = shell_link::read_arguments(&path_str)
+                .ok()
+                .flatten()
+                .is_some_and(|args| crate::classify::parse_appx_aumid(&args).is_some());
+            if is_appx {
+                kind = ItemKind::AppxShortcut;
             }
         }
         items.push(DesktopItem {
@@ -537,5 +619,98 @@ mod tests {
             !items.iter().any(|i| Path::new(&i.path).starts_with(&junction)),
             "a junction's foreign contents must never become style targets"
         );
+    }
+
+    // ---- Task 11: AppsFolder (Store/MSIX) synthesis + args classification ----
+
+    use crate::shell::appsfolder::AppsfolderEntry;
+
+    fn entry(display_name: &str, aumid: &str) -> AppsfolderEntry {
+        AppsfolderEntry { display_name: display_name.into(), aumid: aumid.into() }
+    }
+
+    #[test]
+    fn synthesize_appx_items_covers_only_entries_without_a_walked_item() {
+        let dir = tempfile::tempdir().unwrap();
+        // The walked-name set is LOWERCASED names across every surface: an entry whose name any
+        // real item already carries is addressed by that item — never a duplicate.
+        let walked: std::collections::HashSet<String> =
+            ["brave", "whatsapp"].into_iter().map(String::from).collect();
+        let entries = vec![
+            entry("Brave", "Brave"),
+            entry("whatsapp", "X!App"),
+            entry("Trello", "45273LiamForsyth.PawsforTrello_7pb5ddty8z1pa!trello"),
+            entry("Reloj", "Microsoft.WindowsAlarms_8wekyb3d8bbwe!App"),
+        ];
+        let items = synthesize_appx_items(&walked, &entries, dir.path());
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Trello", "Reloj"], "walked names (any case) are never synthesized");
+
+        let trello = &items[0];
+        assert_eq!(trello.kind, ItemKind::AppxShortcut);
+        assert_eq!(trello.surface, ItemSurface::StartMenu);
+        assert!(trello.parent.is_empty(), "wrappers live at the Programs root");
+        assert_eq!(trello.icon, None, "the icon is extracted live from the package glyph");
+        let expected_path =
+            dir.path().join("Trello.lnk").to_string_lossy().into_owned();
+        assert_eq!(trello.path, expected_path, "path is the PROSPECTIVE wrapper location");
+        assert_eq!(
+            trello.id,
+            ItemId::from_source_path("filesystem", &expected_path),
+            "the id anchors on the path apply will write to"
+        );
+        assert!(trello.can_style());
+    }
+
+    #[test]
+    fn synthesize_appx_items_dedupes_display_names_and_rejects_unsafe_stems() {
+        let dir = tempfile::tempdir().unwrap();
+        let walked = std::collections::HashSet::new();
+        let entries = vec![
+            entry("Dup", "A!App"),
+            entry("dup", "B!App"), // duplicate display name → first wins
+            entry("Bad:Name", "C!App"), // illegal filename char → skipped
+            entry("Trailing.", "D!App"), // trailing dot normalizes → skipped
+            entry("With Space", "E!App"), // legal → kept
+        ];
+        let items = synthesize_appx_items(&walked, &entries, dir.path());
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Dup", "With Space"]);
+    }
+
+    #[test]
+    fn a_garbage_fixture_lnk_stays_an_ordinary_shortcut_after_the_args_read() {
+        // The args-driven AppxShortcut reclassification must be best-effort: a `.lnk` that cannot
+        // be COM-loaded (every byte fixture here) is an ordinary Shortcut, never a scan error.
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Broken.lnk");
+        let items = walk(dir.path(), ItemSurface::Taskbar, false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ItemKind::Shortcut);
+    }
+
+    /// On-box (COM): a REAL `shell:AppsFolder\...` wrapper walks as an AppxShortcut with a clean
+    /// display name — the classification the whole Task 11 pipeline keys on.
+    #[test]
+    fn a_real_appsfolder_wrapper_lnk_walks_as_an_appx_shortcut() {
+        // The icon lives OUTSIDE the walked root — it is an asset, not a scanned item.
+        let assets = tempfile::tempdir().unwrap();
+        let icon = assets.path().join("i.ico");
+        std::fs::write(&icon, b"icon").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let lnk = dir.path().join("WhatsApp.lnk").to_string_lossy().into_owned();
+        let icon = icon.to_string_lossy().into_owned();
+        let exec = crate::com::StaExecutor::spawn().unwrap();
+        exec.run(move || shell_link::create_appx_shortcut(&lnk, "Fake.App_abc!App", &icon))
+            .unwrap()
+            .unwrap();
+        let items = walk(dir.path(), ItemSurface::StartMenu, false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].kind,
+            ItemKind::AppxShortcut,
+            "AppsFolder arguments must reclassify the .lnk"
+        );
+        assert_eq!(items[0].name, "WhatsApp", "the label drops .lnk like any shortcut");
     }
 }

@@ -99,6 +99,17 @@ pub fn start_menu_roots_labeled() -> Vec<PathBuf> {
     roots
 }
 
+/// The USER Programs root (`FOLDERID_Programs`) — the directory a Store/MSIX wrapper `.lnk` is
+/// CREATED into (Task 11, ADR-0024). User scope by construction, so a wrapper apply never routes
+/// through the elevated helper. Best-effort by contract: `None` on a locked-down profile (the
+/// AppsFolder surface is then skipped, exactly like any other best-effort root).
+///
+/// [WINDOWS-VERIFY] runtime.
+pub fn user_programs_root() -> Option<PathBuf> {
+    let path = known_folder(&FOLDERID_Programs).ok().flatten()?;
+    path.is_dir().then_some(path)
+}
+
 fn known_folder(id: &GUID) -> PortResult<Option<PathBuf>> {
     // SAFETY: `SHGetKnownFolderPath` allocates a `PWSTR` that we own and free with
     // `CoTaskMemFree`; `to_string` reads the NUL-terminated buffer before it is freed.

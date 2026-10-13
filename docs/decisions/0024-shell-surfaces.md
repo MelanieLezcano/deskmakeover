@@ -68,6 +68,27 @@
    per-surface looks (v2 parking lot) · resident auto-format on new surfaces without its
    own consent gate · any new privileged surface beyond the already-classified
    `ProgramData` Start menu.
+6. **MSIX entries via owned wrapper `.lnk`** (Task 11, owner directive 2026-10-12):
+   Start entries that are AppListEntries with NO file-backed shortcut (7 of 97 on the
+   dev box) become styleable through an OWNED wrapper shortcut in the USER Programs
+   root — target `%SystemRoot%\explorer.exe` + args `shell:AppsFolder\<AUMID>`,
+   `System.AppUserModel.ID` = the package AUMID (the field Windows' merge logic reads:
+   2 Start rows → 1, the merged row renders the WRAPPER's icon), `IconLocation` = our
+   asset, Description = `DeskMakeover:appx-wrapper:v1` (distinct from the file-wrapper
+   marker — reunification never claims it). The AUMID is set on the ShellLink OBJECT
+   (QI `IPropertyStore` → `SetValue` → `Commit`) and published by ONE
+   `IPersistFile::Save`, so link + property block land atomically; the writer preserves
+   the AUMID across every icon rewrite (a dropped AUMID silently un-merges the wrapper
+   back into a duplicate Start row). The wrapper NEVER touches package assets (the
+   Never-list stands byte-for-byte; deletion restores the package icon — owner-verified
+   reversible), always lands in the user Programs root (no new elevation, no new
+   privileged surface), and its absent-original restore REMOVES the wrapper
+   (`RestoreAnchor::FileAbsent`). Package glyph extraction is the AppsFolder item's
+   `IShellItemImageFactory::GetImage` — never the wrapper's own IconLocation. Click-to-
+   launch on-box end-to-end is a ship gate; if the explorer route cannot activate, the
+   wrapper re-targets `deskmakeover-desktop.exe --activate-aumid <AUMID>`
+   (`IApplicationActivationManager`, proven on-box) — an entry that renders but cannot
+   launch is never shipped.
 
 ## Consequences
 
