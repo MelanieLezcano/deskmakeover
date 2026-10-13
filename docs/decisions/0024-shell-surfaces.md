@@ -69,26 +69,42 @@
    own consent gate · any new privileged surface beyond the already-classified
    `ProgramData` Start menu.
 6. **MSIX entries via owned wrapper `.lnk`** (Task 11, owner directive 2026-10-12):
-   Start entries that are AppListEntries with NO file-backed shortcut (7 of 97 on the
-   dev box) become styleable through an OWNED wrapper shortcut in the USER Programs
-   root — target `%SystemRoot%\explorer.exe` + args `shell:AppsFolder\<AUMID>`,
-   `System.AppUserModel.ID` = the package AUMID (the field Windows' merge logic reads:
-   2 Start rows → 1, the merged row renders the WRAPPER's icon), `IconLocation` = our
-   asset, Description = `DeskMakeover:appx-wrapper:v1` (distinct from the file-wrapper
-   marker — reunification never claims it). The AUMID is set on the ShellLink OBJECT
-   (QI `IPropertyStore` → `SetValue` → `Commit`) and published by ONE
-   `IPersistFile::Save`, so link + property block land atomically; the writer preserves
-   the AUMID across every icon rewrite (a dropped AUMID silently un-merges the wrapper
-   back into a duplicate Start row). The wrapper NEVER touches package assets (the
-   Never-list stands byte-for-byte; deletion restores the package icon — owner-verified
-   reversible), always lands in the user Programs root (no new elevation, no new
-   privileged surface), and its absent-original restore REMOVES the wrapper
-   (`RestoreAnchor::FileAbsent`). Package glyph extraction is the AppsFolder item's
-   `IShellItemImageFactory::GetImage` — never the wrapper's own IconLocation. Click-to-
-   launch on-box end-to-end is a ship gate; if the explorer route cannot activate, the
-   wrapper re-targets `deskmakeover-desktop.exe --activate-aumid <AUMID>`
-   (`IApplicationActivationManager`, proven on-box) — an entry that renders but cannot
-   launch is never shipped.
+   Start entries that are AppListEntries with NO file-backed shortcut (42 of the 98
+   AppsFolder entries on the dev box — display-name matched against the full recursive
+   walk) become styleable through an OWNED wrapper shortcut in the USER Programs root.
+   The recipe has two parts:
+   - **Launch (the fork ships the box-verified re-target)**: target = the HOST binary
+     with args `--activate-aumid <AUMID>` — a `main.rs` fast-path that calls
+     `IApplicationActivationManager::ActivateApplication` (CLSID `45BA127D-…`, IID
+     `2E941141-7F97-4756-BA1D-9DECDE894A3D`) and exits without booting the GUI.
+     REASON: the documented primary recipe (Windows' own Store-app pins) — target
+     `%SystemRoot%\explorer.exe` + args `shell:AppsFolder\<AUMID>` — was re-tested
+     on-box with a real wrapper (ShellExecute) and FAILED a 4th time to activate the
+     app, consistent with the 3 earlier CLI attempts and the pre-existing COM
+     registration damage (wallpaper bug `0x80040154` family). The primary stays
+     documented here for upstream; the re-target is what makes the gate honest
+     ON-BOX (click-to-launch passed via the launcher route 2026-10-13). Host
+     manifest is `asInvoker` → no UAC on wrapper click. `parse_appx_aumid`
+     reclassifies present wrappers from EITHER recipe (a present wrapper read as an
+     ordinary shortcut would compound re-styles).
+   - **Identity/merge**: `System.AppUserModel.ID` = the package AUMID (the field
+     Windows' merge logic reads: 2 Start rows → 1, the merged row renders the
+     WRAPPER's icon), `IconLocation` = our asset, Description =
+     `DeskMakeover:appx-wrapper:v1` (distinct from the file-wrapper marker —
+     reunification never claims it). The AUMID is set on the ShellLink OBJECT
+     (QI `IPropertyStore` → `SetValue` → `Commit`) and published by ONE
+     `IPersistFile::Save`, so link + property block land atomically; the writer
+     preserves the AUMID across every icon rewrite (a dropped AUMID silently
+     un-merges the wrapper back into a duplicate Start row). The merge is
+     independent of the launch mechanism.
+   The wrapper NEVER touches package assets (the Never-list stands byte-for-byte;
+   deletion restores the package icon — owner-verified reversible), always lands in
+   the user Programs root (no new elevation, no new privileged surface), and its
+   absent-original restore REMOVES the wrapper (`RestoreAnchor::FileAbsent`) —
+   verified on-box across two full apply/restore cycles. Package glyph extraction is
+   the AppsFolder item's `IShellItemImageFactory::GetImage` — never the wrapper's own
+   IconLocation. An entry that renders but cannot launch is never shipped: the
+   click-to-launch gate passed on-box via the re-target (2026-10-13).
 
 ## Consequences
 

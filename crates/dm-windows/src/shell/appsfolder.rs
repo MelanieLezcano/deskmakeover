@@ -4,12 +4,16 @@
 //! is COM).
 
 use dm_domain::{PortError, PortResult};
-use windows::core::{HSTRING, Interface};
-use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
+use windows::core::{HSTRING, Interface, GUID};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, IBindCtx, CLSCTX_ALL,
+    COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, IEnumShellItems, IShellItem, IShellItemImageFactory,
-    SHCreateItemFromParsingName, SHCreateItemFromRelativeName, SIGDN_DESKTOPABSOLUTEPARSING,
-    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SIGDN,
+    BHID_EnumItems, IApplicationActivationManager, IEnumShellItems, IShellItem,
+    IShellItemImageFactory, SHCreateItemFromParsingName, SHCreateItemFromRelativeName,
+    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SIGDN,
+    ACTIVATEOPTIONS,
 };
 
 /// One AppsFolder entry: the display name the Start menu shows, and its activation id (the AUMID
@@ -99,6 +103,34 @@ pub fn package_glyph_image(aumid: &str) -> PortResult<Option<dm_domain::DecodedI
     let item = shell_item(aumid)?;
     let factory: IShellItemImageFactory = item.cast().map_err(com)?;
     crate::source::factory_icon_image(&factory)
+}
+
+/// Activates a Store/MSIX app by AUMID through `IApplicationActivationManager::ActivateApplication`
+/// — the Task 11 wrapper's LAUNCH mechanism on boxes whose `explorer.exe shell:AppsFolder\…` route
+/// is broken (verified on-box 2026-10-13: three CLI attempts AND a real wrapper click all failed
+/// to start the app while this API returned S_OK and the app stayed up — pre-existing COM
+/// registration damage on the owner's box, same family as the wallpaper `0x80040154`). Returns the
+/// activated process id. Owns its COM init: an unattached thread gets an STA, an already
+/// initialized apartment (any mode) simply proceeds.
+///
+/// The CLSID has no windows-rs constant (defined here); the IID rides the crate's interface type
+/// and is the documented `2E941141-7F97-4756-BA1D-9DECDE894A3D` (the widely-circulated
+/// `2E97EF3E-…` is wrong → E_NOINTERFACE). [WINDOWS-VERIFY] runtime.
+pub fn activate_app(aumid: &str) -> PortResult<u32> {
+    // CLSID_IApplicationActivationManager (shell32).
+    const CLSID: GUID = GUID::from_u128(0x45BA127D_10A8_46EA_8AB7_56EA9078943C);
+    // SAFETY: the manager is a trusted system COM object; the HSTRING arguments outlive the call
+    // (the shell copies what it needs at the call boundary).
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let manager: IApplicationActivationManager =
+            CoCreateInstance(&CLSID, None, CLSCTX_ALL).map_err(com)?;
+        let id = HSTRING::from(aumid);
+        // `ACTIVATEOPTIONS(0)` = AO_NONE (the crate carries no named constant for it).
+        manager
+            .ActivateApplication(&id, &HSTRING::new(), ACTIVATEOPTIONS(0))
+            .map_err(com)
+    }
 }
 
 /// The AppsFolder as a shell item (`shell:AppsFolder` is a parsing name the shell resolves).

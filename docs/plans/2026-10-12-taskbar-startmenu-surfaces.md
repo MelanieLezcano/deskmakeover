@@ -252,29 +252,39 @@ every existing port.
       chaining. Fingerprint for "absent" = a dedicated sentinel (like the virtual
       recycle-bin state), stable both directions.
     - **Write**: `shell_link::create_appx_shortcut(path, aumid, icon)` — ONE
-      `IShellLink` object: target `%SystemRoot%\explorer.exe` (expanded from the
-      env var), args `shell:AppsFolder\<AUMID>`, icon location, ownership marker
+      `IShellLink` object: target = the HOST binary (resolved from
+      `current_exe`), args `--activate-aumid <AUMID>` (the box-verified launcher
+      recipe — see the click gate below), icon location, ownership marker
       `DeskMakeover:appx-wrapper:v1` (distinct from the file-wrapper marker —
       reunification never claims it), then `IPropertyStore` (QI from the SAME
       link object) → `SetValue(PKEY_AppUserModel_ID, VT_LPWSTR)` → `Commit`,
       then ONE `IPersistFile::Save` (claim-temp + finalize, crash-safe like every
       writer). The AUMID property is THE mechanism: Windows merges the wrapper
-      with the virtual entry (2 rows → 1) and renders the wrapper's icon.
-    - **[WINDOWS-VERIFY] Launch path — VERIFY ON BOX BEFORE SHIP**: the icon
-      merge/render does NOT depend on the wrapper's target, but clicking DOES.
-      On the owner's machine `explorer.exe shell:AppsFolder\<AUMID>` does not
-      activate apps (3 attempts with Calculator → no process; the owner's
-      busy-cursor loop when clicking the probe wrapper = this exact recipe),
-      while `IApplicationActivationManager::ActivateApplication` (CLSID
-      `45BA127D-10A8-46EA-8AB7-56EA9078943C`, **IID
+      with the virtual entry (2 rows → 1) and renders the wrapper's icon — the
+      merge is independent of the launch mechanism. A present wrapper must
+      RECLASSIFY from its args too: `parse_appx_aumid` accepts BOTH wrapper
+      recipes (`shell:AppsFolder\…` and `--activate-aumid …`), otherwise a
+      re-scan would read it as an ordinary shortcut and a re-style would
+      compound (Style(Style(orig))).
+    - **[WINDOWS-VERIFY] Launch path — VERIFIED ON BOX 2026-10-13, gate PASSED
+      via the re-target**: the icon merge/render does NOT depend on the wrapper's
+      target, but clicking DOES. The explorer route was re-tested with a REAL
+      wrapper (ShellExecute = double-click equivalent) and FAILED again (WhatsApp
+      never activated), confirming the 3 earlier CLI attempts; the pre-existing
+      COM registration damage (wallpaper bug `0x80040154` family) stands, so
+      `sfc /DISM` remains out of repo scope. The sanctioned fallback is therefore
+      IMPLEMENTED as the shipped recipe: the wrapper targets
+      `deskmakeover-desktop.exe --activate-aumid <AUMID>`, whose `main.rs`
+      fast-path calls `IApplicationActivationManager::ActivateApplication`
+      (CLSID `45BA127D-10A8-46EA-8AB7-56EA9078943C`, **IID
       `2E941141-7F97-4756-BA1D-9DECDE894A3D`** — the widely-circulated
-      `2E97EF3E-…` is wrong → E_NOINTERFACE) returns S_OK and the app stays up.
-      The recipe is what Windows' own Store-app pins use → box-specific
-      breakage correlating with the pre-existing COM registration damage
-      (wallpaper bug `0x80040154`). Task 11 ships only after a wrapper is
-      clicked end-to-end on-box; if the explorer route still fails, disclose
-      (system repair `sfc /DISM` is out of repo scope) or re-target the
-      wrapper — do NOT silently ship an entry that renders but cannot launch.
+      `2E97EF3E-…` is wrong → E_NOINTERFACE) and exits WITHOUT booting the GUI
+      (exit codes: 0 activated · 2 missing argument · 3 activation failed).
+      Gate evidence: direct CLI → exit 0 + `WhatsApp.Root` running; wrapper click
+      → `WhatsApp.Root` running. The explorer.exe + `shell:AppsFolder\…` recipe
+      stays the DOCUMENTED PRIMARY in ADR-0024 (Windows' own Store-app pins use
+      it); this fork re-targets until the box is repaired. Host manifest is
+      `asInvoker` → no UAC on wrapper click.
     - **Ledger / restore**: original = wrapper *Absent* → restore REMOVES the
       wrapper (the `file_wrapper` Absent→`remove_file` precedent) → the package
       icon returns. Zero package mutation; ADR-0024 Never-list intact.
@@ -289,25 +299,35 @@ every existing port.
       round-trip, `commit_apply` path for `AppxShortcut` (unelevated), collision
       skips. Docs: ADR-0024 records the sanctioned wrapper recipe; the
       "silently-absent badge" follow-up is superseded by this task.
-    - **Status 2026-10-13 — implemented, gates green, on-box ship gate
-      pending**: all Task 11 code landed (scan args-classification + pure
-      synthesis hook; `shell/appsfolder.rs` enumerate/resolve/shell-item/glyph;
-      state-reader `AppxAbsent` fingerprint + `FileAbsent` anchor split;
-      `apply_appx` create-or-rewrite + `remove`; extraction early-return via the
-      shared `factory_icon_image`; AUMID-preserving writer; fake-world virtual
-      model). Gates on-box: `cargo test --workspace` 0 failures (dm-windows
-      137, dm-domain 59, dm-operations 230), `bun test`/`tsc`/lint/bindings
-      green. The two ops orchestration tests live in the Mac-gated
-      `icons/tests.rs` (`#[cfg(all(test, not(windows)))]`, repo convention):
-      verified once by lifting that gate (272/272, both AppxShortcut flows
-      pass), gate restored to a zero-diff state after. **Remaining ship gate
-      (on-box)**: enumeration pin (WhatsApp AUMID literal), scan shows the
-      synthesized count on the dev box, and click-to-launch end-to-end — if the
-      explorer route still fails, re-target the wrapper at
-      `deskmakeover-desktop.exe --activate-aumid <AUMID>`
-      (IApplicationActivationManager, proven on-box); do NOT ship an entry that
-      renders but cannot launch. Afterwards the HKLM WebView2
-      `AdditionalBrowserArguments` dev value is deleted (value + key form).
+    - **Status 2026-10-13 — implemented, ALL gates green (incl. on-box ship
+      gates)**: all Task 11 code landed (scan args-classification + pure
+      synthesis hook; `shell/appsfolder.rs` enumerate/resolve/shell-item/glyph/
+      `activate_app`; state-reader `AppxAbsent` fingerprint + `FileAbsent`
+      anchor split; `apply_appx` create-or-rewrite + `remove`; extraction
+      early-return via the shared `factory_icon_image`; AUMID-preserving writer
+      + launcher recipe; `--activate-aumid` CLI fast-path in `main.rs`;
+      fake-world virtual model). Gates on-box: `cargo test --workspace` 0
+      failures (dm-windows 138, dm-domain 59, dm-operations 230), `bun test`
+      670 / banned-colors 146 / `tsc -b` / lint / check:bindings green. The two
+      ops orchestration tests live in the Mac-gated `icons/tests.rs`
+      (`#[cfg(all(test, not(windows)))]`, repo convention): verified once by
+      lifting that gate (272/272, both AppxShortcut flows pass), gate restored
+      to a zero-diff state after. **On-box ship gates PASSED (2026-10-13)**:
+      enumeration pin (the WhatsApp AUMID literal resolves through StaExecutor);
+      scan shows 42 synthesized AppxShortcut entries with zero collisions
+      against walked items (only pre-existing WinRAR file↔file duplicate labels
+      remain, untouched by this task); full apply → 42 wrappers created, each
+      verified (target = host, args = `--activate-aumid <AUMID>`, marker,
+      `System.AppUserModel.ID` property, baked asset on disk); click-to-launch
+      PASSED via the launcher recipe (wrapper click → `WhatsApp.Root` up,
+      Responding); restore REMOVES all 42 wrappers (`RestoreAnchor::FileAbsent`)
+      with user-root, ProgramData and desktop originals byte-restored — two
+      full apply/restore cycles, both directions clean. Transient "duplicate
+      display name" warns during a post-restore watcher rescan are honest
+      first-wins dedupe racing the deletions (steady-state scans repeat none).
+      After this pass the HKLM WebView2 `AdditionalBrowserArguments` dev value
+      is deleted (value + key form) — the CDP bring-up existed only for this
+      verification.
 
 ## [WINDOWS-VERIFY] field findings — live pass 2026-10-12 (owner box)
 
@@ -408,9 +428,12 @@ restore → byte-identical FileBytes on pins/Start ✅ (2026-10-12: 94/94) ·
 uninstall residue `[pending]` · dev-loop hardening ✅ (worker posts
 `ok:false`/`png:null` failure acks instead of swallowing init rejection;
 TEMP-DEBUG markers removed; `**/target/**` vite watch ignore landed) ·
-Task 11 on-box ship gates `[pending]` (enumeration pin · synthesized count in
-scan · click-to-launch end-to-end · then delete the HKLM WebView2
-`AdditionalBrowserArguments` dev value + key form).
+Task 11 on-box ship gates ✅ (2026-10-13: enumeration pin · 42 synthesized
+AppxShortcut with zero walked collisions · 42 wrappers created — content +
+AUMID property verified · click-to-launch PASSED via the implemented
+`--activate-aumid` launcher recipe after the explorer route failed a 4th
+confirmation · two full apply/restore cycles clean incl. ProgramData · then the
+HKLM WebView2 `AdditionalBrowserArguments` dev value + key form deleted).
 
 ## Follow-ups (documented, out of v1)
 

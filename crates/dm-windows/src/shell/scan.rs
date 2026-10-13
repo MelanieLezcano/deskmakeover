@@ -689,8 +689,10 @@ mod tests {
         assert_eq!(items[0].kind, ItemKind::Shortcut);
     }
 
-    /// On-box (COM): a REAL `shell:AppsFolder\...` wrapper walks as an AppxShortcut with a clean
-    /// display name — the classification the whole Task 11 pipeline keys on.
+    /// On-box (COM): a REAL appx wrapper (the box-verified launcher recipe — args
+    /// `--activate-aumid <AUMID>`) walks as an AppxShortcut with a clean display name — the
+    /// classification the whole Task 11 pipeline keys on, and the guard against a present
+    /// wrapper re-reading as an ordinary shortcut (which would compound re-styles).
     #[test]
     fn a_real_appsfolder_wrapper_lnk_walks_as_an_appx_shortcut() {
         // The icon lives OUTSIDE the walked root — it is an asset, not a scanned item.
@@ -709,7 +711,7 @@ mod tests {
         assert_eq!(
             items[0].kind,
             ItemKind::AppxShortcut,
-            "AppsFolder arguments must reclassify the .lnk"
+            "our wrapper arguments (--activate-aumid) must reclassify the .lnk"
         );
         assert_eq!(items[0].name, "WhatsApp", "the label drops .lnk like any shortcut");
     }

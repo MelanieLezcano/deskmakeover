@@ -214,12 +214,15 @@ pub const WRAPPER_MARKER: &str = "DeskMakeover:file-wrapper:v1";
 /// marker, not a structural guess.
 pub const APPX_WRAPPER_MARKER: &str = "DeskMakeover:appx-wrapper:v1";
 
-/// Creates the Store/MSIX wrapper `.lnk` at `out_lnk` (Task 11, ADR-0024): target = `explorer.exe`
-/// (EXPANDED, resolved from `%SystemRoot%`), arguments = `shell:AppsFolder\<AUMID>`, description =
+/// Creates the Store/MSIX wrapper `.lnk` at `out_lnk` (Task 11, ADR-0024): target = the HOST
+/// binary (resolved from `current_exe`), arguments = `--activate-aumid <AUMID>`, description =
 /// the appx marker, icon = the generated asset, AND `System.AppUserModel.ID` = the AUMID in the
 /// property store — the field the shell's Start/merge logic actually reads, so the wrapper MERGES
-/// with the app's real Start entry instead of duplicating it. Durability: claim-temp + finalize,
-/// like every other writer. [WINDOWS-VERIFY] runtime (incl. the click-to-launch gate).
+/// with the app's real Start entry instead of duplicating it. The launch route is the box-verified
+/// fallback: this box's `explorer.exe shell:AppsFolder\…` recipe fails to activate (see
+/// [`save_new_appx_to_temp`]), while `IApplicationActivationManager` works. Durability:
+/// claim-temp + finalize, like every other writer. [WINDOWS-VERIFY] runtime (incl. the
+/// click-to-launch gate — PASSED on-box via the launcher route 2026-10-13).
 pub fn create_appx_shortcut(out_lnk: &str, aumid: &str, icon_path: &str) -> PortResult<()> {
     let out = extended_length_path(out_lnk);
     // Pre-claim the temp as a proven-regular O_EXCL file (handoff §8a #1). The AUMID rides the
@@ -243,13 +246,20 @@ fn save_new_appx_to_temp(tmp: &str, aumid: &str, icon_path: &str) -> PortResult<
     unsafe {
         let link: IShellLinkW =
             CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(com)?;
-        // The launch recipe: explorer.exe + the AppsFolder URI — the same invocation the Start menu
-        // itself performs. [WINDOWS-VERIFY] click gate (ADR-0024).
-        let explorer = std::env::var("SystemRoot")
-            .map(|root| format!(r"{root}\explorer.exe"))
-            .unwrap_or_else(|_| r"C:\Windows\explorer.exe".to_string());
-        link.SetPath(&HSTRING::from(&explorer)).map_err(com)?;
-        link.SetArguments(&HSTRING::from(format!(r"shell:AppsFolder\{aumid}"))).map_err(com)?;
+        // The launch recipe — the box-verified FALLBACK (Task 11 click gate, 2026-10-13): the
+        // `explorer.exe shell:AppsFolder\<AUMID>` route (Windows' own recipe, still the documented
+        // primary in ADR-0024) does NOT activate apps on this box — three CLI attempts and a real
+        // wrapper click all failed to start the target while `IApplicationActivationManager`
+        // returned S_OK and the app stayed up (pre-existing COM registration damage, same family
+        // as the wallpaper `0x80040154`). So the wrapper targets the HOST binary as a pure
+        // launcher: `--activate-aumid <AUMID>` activates and exits without booting the GUI (the
+        // CLI fast-path in `src/main.rs`). The AUMID property below keeps the Start-menu merge
+        // INDEPENDENT of the launch mechanism. Creates run in-host only, so `current_exe` is the
+        // desktop host — the elevated helper only ever rewrites PRESENT wrappers.
+        let launcher = std::env::current_exe()
+            .map_err(|e| dm_domain::PortError::Io(format!("current_exe: {e}")))?;
+        link.SetPath(&HSTRING::from(launcher.to_string_lossy().as_ref())).map_err(com)?;
+        link.SetArguments(&HSTRING::from(format!("--activate-aumid {aumid}"))).map_err(com)?;
         link.SetIconLocation(&HSTRING::from(icon_path), 0).map_err(com)?;
         link.SetDescription(&HSTRING::from(APPX_WRAPPER_MARKER)).map_err(com)?;
         // The AUMID (`System.AppUserModel.ID`) — the field the shell's Start/merge logic actually
@@ -428,9 +438,10 @@ mod tests {
 
         let e = exec();
         let l = lnk.clone();
-        let (args, desc, aumid, icon_loc) = e
+        let (target, args, desc, aumid, icon_loc) = e
             .run(move || {
                 Ok::<_, PortError>((
+                    read_target(&l)?,
                     read_arguments(&l)?,
                     read_description(&l)?,
                     read_appusermodel_id(&l)?,
@@ -439,7 +450,13 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(args.as_deref(), Some(r"shell:AppsFolder\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"));
+        assert_eq!(
+            args.as_deref(),
+            Some("--activate-aumid 5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"),
+            "the wrapper launches through the HOST's --activate-aumid fast-path"
+        );
+        let launcher = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        assert_eq!(target.as_deref(), Some(launcher.as_str()), "target = the host binary");
         assert_eq!(desc.as_deref(), Some(APPX_WRAPPER_MARKER));
         assert_eq!(aumid.as_deref(), Some(AUMID), "the property store must carry the AUMID");
         assert_eq!(icon_loc, Some((icon_a.clone(), 0)));
@@ -465,7 +482,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(aumid.as_deref(), Some(AUMID), "the icon rewrite must preserve the AUMID");
-        assert_eq!(args.as_deref(), Some(r"shell:AppsFolder\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"));
+        assert_eq!(
+            args.as_deref(),
+            Some("--activate-aumid 5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"),
+            "the icon rewrite must preserve the launch recipe"
+        );
         assert_eq!(desc.as_deref(), Some(APPX_WRAPPER_MARKER));
         assert_eq!(icon_loc, Some((icon_b, 0)), "the icon itself was rewritten");
     }
