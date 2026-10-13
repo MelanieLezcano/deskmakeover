@@ -194,31 +194,31 @@ describe('effective tile config (override folding)', () => {
     // Omitted surfaces = the DEFAULT (participate — owner decision 2026-10-12) — a pin styles.
     expect(effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY).showOriginal).toBe(false)
     // With a leg ON the pin inherits the global config (no per-surface config exists in v1).
-    const on = effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: true, startMenu: false })
+    const on = effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: true, startMenu: false, explorer: true })
     expect(on.showOriginal).toBe(false)
     expect(on.config).toEqual({ ...config, autoSeparation: true })
     // OFF again → original; the tile also rides restoreIds in apply() (auto-restore).
     expect(
-      effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true }).showOriginal,
+      effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true, explorer: true }).showOriginal,
     ).toBe(true)
     // A per-icon tint NEVER rescues a surface the user turned off (RESTORE-FIRST).
     const tinted = item('p2', { surface: 'taskbar', overrideMode: 'tint', overrideTint: '#3FB6A8' })
     expect(
-      effectiveTileConfig(tinted, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true }).showOriginal,
+      effectiveTileConfig(tinted, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true, explorer: true }).showOriginal,
     ).toBe(true)
   })
 
   test('surface gate: the desktop is NEVER gated — kindPolicy alone governs it', () => {
     const desk = item('a')
-    for (const surfaces of [DEFAULT_SURFACES, { taskbar: true, startMenu: true }]) {
+    for (const surfaces of [DEFAULT_SURFACES, { taskbar: true, startMenu: true, explorer: true }]) {
       expect(effectiveTileConfig(desk, config, DEFAULT_KIND_POLICY, undefined, surfaces).showOriginal).toBe(false)
     }
   })
 
   test('surface gate: the start-menu leg gates its items independently of the taskbar leg', () => {
     const tile = item('s', { surface: 'startMenu' })
-    expect(effectiveTileConfig(tile, config, DEFAULT_KIND_POLICY, undefined, { taskbar: true, startMenu: false }).showOriginal).toBe(true)
-    expect(effectiveTileConfig(tile, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true }).showOriginal).toBe(false)
+    expect(effectiveTileConfig(tile, config, DEFAULT_KIND_POLICY, undefined, { taskbar: true, startMenu: false, explorer: true }).showOriginal).toBe(true)
+    expect(effectiveTileConfig(tile, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true, explorer: true }).showOriginal).toBe(false)
   })
 })
 

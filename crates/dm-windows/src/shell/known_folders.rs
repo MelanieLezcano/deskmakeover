@@ -7,8 +7,9 @@ use dm_domain::{PortError, PortResult};
 use windows::core::GUID;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
-    SHGetKnownFolderPath, FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Programs,
-    FOLDERID_ProgramData, FOLDERID_PublicDesktop, FOLDERID_RoamingAppData, KF_FLAG_DEFAULT,
+    SHGetKnownFolderPath, FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Profile,
+    FOLDERID_Programs, FOLDERID_ProgramData, FOLDERID_PublicDesktop, FOLDERID_RoamingAppData,
+    KF_FLAG_DEFAULT,
 };
 
 /// The desktop roots LABELED by identity: `(user desktop, public desktop)`. The USER desktop is
@@ -107,6 +108,17 @@ pub fn start_menu_roots_labeled() -> Vec<PathBuf> {
 /// [WINDOWS-VERIFY] runtime.
 pub fn user_programs_root() -> Option<PathBuf> {
     let path = known_folder(&FOLDERID_Programs).ok().flatten()?;
+    path.is_dir().then_some(path)
+}
+
+/// The USER profile root (`FOLDERID_Profile`, e.g. `C:\Users\Melu`) — the recursive root of the
+/// `explorer` surface's FOLDER items (ADR-0004 D7). Best-effort by contract: `None` on a
+/// locked-down profile (the explorer folder surface is then skipped, like any other best-effort
+/// root). The walk beneath it applies the hidden/system/reparse/denylist exclusions.
+///
+/// [WINDOWS-VERIFY] runtime.
+pub fn profile_root() -> Option<PathBuf> {
+    let path = known_folder(&FOLDERID_Profile).ok().flatten()?;
     path.is_dir().then_some(path)
 }
 

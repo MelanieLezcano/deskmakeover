@@ -197,6 +197,7 @@ export const zhHans: Record<keyof typeof en, string> = {
   "Surface_DesktopTip": "桌面始终参与美化，不可关闭",
   "Surface_Taskbar": "任务栏",
   "Surface_StartMenu": "开始菜单",
+  "Surface_Explorer": "文件资源管理器",
   "Surface_Always": "始终开启",
   "Start_Pinned": "已固定",
   "Start_Empty": "未找到开始菜单快捷方式",
@@ -216,6 +217,7 @@ export const zhHans: Record<keyof typeof en, string> = {
   "ComingSoon": "即将推出", // PENDING-RESX (v3 filter roadmap slot)
   "ConsentAgree": "好，开始美化",
   "ConsentAlsoSurfaces": "同时还会美化 {0} 个任务栏固定图标和 {1} 个开始菜单快捷方式——只改快捷方式的图标，绝不动应用本身的文件", // PENDING-RESX (ADR-0024)
+  "ConsentAlsoExplorer": "同时还会美化文件资源管理器中的 {0} 个文件夹和驱动器——通过各自的图标设置，完全可还原", // PENDING-RESX (ADR-0004 D7)
   "ConsentArrow": "应用美化时，我们会隐藏 Windows 自带的快捷方式小箭头，改由 DeskMakeover 统一绘制，让图标更清爽。这项改动对整台电脑生效，也会影响桌面以外、以及本机其他账户的快捷方式；随时可以在设置里一键恢复。", // PENDING-RESX (arrow-restore panel 2026-07-11)
   "ConsentCancel": "再想想",
   "ConsentNot": "不会发生：不删除、不移动、不修改你的任何文件",

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { Check, ChevronDown, LayoutGrid, Monitor, PanelBottom, RotateCcw } from 'lucide-react'
+import { Check, ChevronDown, Folder, LayoutGrid, Monitor, PanelBottom, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { PropertyRow, SwatchButton, SwatchPicker, swatchButtonClass } from '@/components/common/inspector'
@@ -12,7 +12,7 @@ import { useIcons } from '@/stores/icons'
 import { BUCKET_NAME_KEY, KIND_BUCKETS, kindBucket } from '@/lib/kind-policy'
 import { typeIsCustom } from '@/lib/type-config'
 import type { ConfigDto, IconKindBucket, Surfaces, TypeOverrides, TypePatch } from '@/bridge/types'
-import { format, useT } from '@/lib/i18n'
+import { format, useT, type StringKey } from '@/lib/i18n'
 
 // Participation surfaces (chief-UI/UX + owner 2026-07-09), both fed by one
 // store state — no priority matrix:
@@ -28,7 +28,14 @@ import { format, useT } from '@/lib/i18n'
 //     axis, orthogonal to kindPolicy.
 
 /** The toggleable surface legs (the desktop is never a leg — always on). */
-const SURFACE_LEGS = ['taskbar', 'startMenu'] as const satisfies readonly (keyof Surfaces)[]
+const SURFACE_LEGS = ['taskbar', 'startMenu', 'explorer'] as const satisfies readonly (keyof Surfaces)[]
+
+/** Per-leg label + icon (the row grammar stays identical across legs). */
+const SURFACE_LEG_META: Record<keyof Surfaces, { label: StringKey; Icon: typeof PanelBottom }> = {
+  taskbar: { label: 'Surface_Taskbar', Icon: PanelBottom },
+  startMenu: { label: 'Surface_StartMenu', Icon: LayoutGrid },
+  explorer: { label: 'Surface_Explorer', Icon: Folder },
+}
 
 /** The per-icon keep ledger — soft inset chip, pin dot, expandable cancel list. */
 export function KeptBar() {
@@ -153,10 +160,11 @@ export function KindTypeSection({ tryOn }: { tryOn: TypeTryOn }) {
   // ADR-0024: live per-surface counts — what the scan actually found on each
   // write surface (the honest number behind each checkbox).
   const surfaceCounts = React.useMemo(() => {
-    const c = { taskbar: 0, startMenu: 0 }
+    const c = { taskbar: 0, startMenu: 0, explorer: 0 }
     for (const i of items) {
       if (i.surface === 'taskbar') c.taskbar++
       else if (i.surface === 'startMenu') c.startMenu++
+      else if (i.surface === 'explorer') c.explorer++
     }
     return c
   }, [items])
@@ -498,8 +506,8 @@ export function KindTypeSection({ tryOn }: { tryOn: TypeTryOn }) {
           </div>
           {SURFACE_LEGS.map((leg) => {
             const on = surfaces[leg]
-            const name = t(leg === 'taskbar' ? 'Surface_Taskbar' : 'Surface_StartMenu')
-            const Icon = leg === 'taskbar' ? PanelBottom : LayoutGrid
+            const { label, Icon } = SURFACE_LEG_META[leg]
+            const name = t(label)
             return (
               <div key={leg} className="-mx-1.5 flex items-center gap-2 rounded-lg px-1.5 py-1.5">
                 <button

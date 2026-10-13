@@ -158,6 +158,9 @@ pub struct SurfacesJson {
     pub taskbar: bool,
     /// Start menu shortcuts (user + all-users roots), camelCase `startMenu` on the wire.
     pub start_menu: bool,
+    /// File Explorer (ADR-0004 D7): the profile's folders (via `desktop.ini`) + fixed drives (via
+    /// the registry `DriveIcons` key). camelCase `explorer` on the wire.
+    pub explorer: bool,
 }
 
 impl Default for SurfacesJson {
@@ -165,6 +168,7 @@ impl Default for SurfacesJson {
         Self {
             taskbar: true,
             start_menu: true,
+            explorer: true,
         }
     }
 }
@@ -175,6 +179,7 @@ impl SurfacesJson {
             ItemSurface::Desktop => true,
             ItemSurface::Taskbar => self.taskbar,
             ItemSurface::StartMenu => self.start_menu,
+            ItemSurface::Explorer => self.explorer,
         }
     }
 }

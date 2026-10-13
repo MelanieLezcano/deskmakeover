@@ -66,12 +66,12 @@ export function kindParticipates(kind: IconKind, policy: KindPolicy): boolean {
  *  too — the SAME participate-by-default rule as kindPolicy. Opting a surface
  *  OUT is explicit (and disabling one auto-restores it on the next apply,
  *  RESTORE-FIRST). */
-export const DEFAULT_SURFACES: Surfaces = { taskbar: true, startMenu: true }
+export const DEFAULT_SURFACES: Surfaces = { taskbar: true, startMenu: true, explorer: true }
 
 /** The `surfaces` legs — a CLOSED whitelist (G11): only these keys exist, any
  *  other key in a `surfaces` object is dropped on read (additive tolerance,
  *  mirroring unknown kind buckets). */
-const SURFACE_KEYS = ['taskbar', 'startMenu'] as const satisfies readonly (keyof Surfaces)[]
+const SURFACE_KEYS = ['taskbar', 'startMenu', 'explorer'] as const satisfies readonly (keyof Surfaces)[]
 
 /** Whether an item on `surface` participates under `surfaces`. The desktop is
  *  NEVER gated here — it is the app's core promise; kindPolicy governs it alone. */
@@ -83,6 +83,8 @@ export function surfaceParticipates(surface: Surface, surfaces: Surfaces): boole
       return surfaces.taskbar
     case 'startMenu':
       return surfaces.startMenu
+    case 'explorer':
+      return surfaces.explorer
   }
 }
 

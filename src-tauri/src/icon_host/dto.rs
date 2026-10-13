@@ -49,6 +49,7 @@ pub(super) fn map_surface(surface: ItemSurface) -> SurfaceDto {
         ItemSurface::Desktop => SurfaceDto::Desktop,
         ItemSurface::Taskbar => SurfaceDto::Taskbar,
         ItemSurface::StartMenu => SurfaceDto::StartMenu,
+        ItemSurface::Explorer => SurfaceDto::Explorer,
     }
 }
 

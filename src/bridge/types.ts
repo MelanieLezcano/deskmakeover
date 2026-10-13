@@ -225,6 +225,9 @@ export type KindPolicy = Record<IconKindBucket, boolean>
 export interface Surfaces {
   taskbar: boolean
   startMenu: boolean
+  /** File Explorer (ADR-0004 D7): the profile's folders (`desktop.ini`) + fixed drives
+   *  (registry `DriveIcons`). Same default-true rule as the others. */
+  explorer: boolean
 }
 
 /** The per-type style envelope (ADR-0017 D3): ONLY these axes may differ by
@@ -266,7 +269,7 @@ export type TypeOverrides = Partial<Record<IconKindBucket, TypeOverrideEntry>>
 /** WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
  *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Mirrors the generated
  *  `SurfaceDto` union; the hand mirror keeps the frontend-owned `IconItemDto` self-contained. */
-export type Surface = 'desktop' | 'taskbar' | 'startMenu'
+export type Surface = 'desktop' | 'taskbar' | 'startMenu' | 'explorer'
 
 /** One desktop item (icons contract v2, spec 06 §2): the web renders styling
  *  locally from `sourceUrls` (256px, [0] primary; RecycleBin ships TWO —

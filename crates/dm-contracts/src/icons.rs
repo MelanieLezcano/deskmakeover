@@ -49,9 +49,10 @@ pub enum IconKindDto {
 }
 
 /// WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
-/// taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Serialized camelCase
-/// to match the TS union `'desktop' | 'taskbar' | 'startMenu'`. `#[serde(default)]` reads an
-/// absent field as `Desktop`, so a downgraded/older host degrades to the classic surface.
+/// taskbar pin (`…\User Pinned\TaskBar\*.lnk`), a Start menu shortcut, or File Explorer (the
+/// profile's folders + fixed drives, ADR-0004 D7). Serialized camelCase to match the TS union
+/// `'desktop' | 'taskbar' | 'startMenu' | 'explorer'`. `#[serde(default)]` reads an absent field
+/// as `Desktop`, so a downgraded/older host degrades to the classic surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceDto {
@@ -59,6 +60,7 @@ pub enum SurfaceDto {
     Desktop,
     Taskbar,
     StartMenu,
+    Explorer,
 }
 
 /// One desktop item as the scanner observed it — raw platform truth ONLY (no override, no style).
@@ -244,6 +246,7 @@ mod tests {
             (SurfaceDto::Desktop, "\"desktop\""),
             (SurfaceDto::Taskbar, "\"taskbar\""),
             (SurfaceDto::StartMenu, "\"startMenu\""),
+            (SurfaceDto::Explorer, "\"explorer\""),
         ] {
             assert_eq!(serde_json::to_string(&variant).unwrap(), literal);
             assert_eq!(serde_json::from_str::<SurfaceDto>(literal).unwrap(), variant);

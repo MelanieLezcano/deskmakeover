@@ -140,6 +140,10 @@ pub enum ItemSurface {
     Desktop,
     Taskbar,
     StartMenu,
+    /// File Explorer (ADR-0004 D7): the folders a user browses (styled via `desktop.ini`) and
+    /// the fixed drives (styled via the registry `DriveIcons` key). One surface, two write
+    /// mechanisms — routing is by `kind`, not surface.
+    Explorer,
 }
 
 impl Default for ItemSurface {

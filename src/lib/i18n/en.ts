@@ -195,6 +195,7 @@ export const en = {
   "Surface_DesktopTip": "The desktop is always styled — this one never turns off",
   "Surface_Taskbar": "Taskbar",
   "Surface_StartMenu": "Start menu",
+  "Surface_Explorer": "File Explorer",
   "Surface_Always": "Always on",
   "Start_Pinned": "Pinned",
   "Start_Empty": "No Start menu shortcuts found",
@@ -214,6 +215,7 @@ export const en = {
   "ComingSoon": "Coming soon", // PENDING-RESX (v3 filter roadmap slot)
   "ConsentAgree": "OK, beautify",
   "ConsentAlsoSurfaces": "It also styles {0} taskbar pins and {1} Start menu shortcuts — your shortcuts' icons only, never the apps' files", // PENDING-RESX (ADR-0024)
+  "ConsentAlsoExplorer": "It also styles {0} folders and drives in File Explorer — via each folder's own icon setting, fully reversible", // PENDING-RESX (ADR-0004 D7)
   "ConsentArrow": "When you apply a look, we hide the small shortcut arrow Windows adds and let DeskMakeover draw a cleaner one instead. This takes effect for the whole computer, so it also touches shortcuts outside the desktop and on other accounts on this PC; you can restore it any time in Settings with one click.", // PENDING-RESX (arrow-restore panel 2026-07-11)
   "ConsentCancel": "Not yet",
   "ConsentNot": "What does not happen: no files are deleted, moved, or modified",

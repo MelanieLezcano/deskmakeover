@@ -130,6 +130,20 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
             items.extend(synthesize_appx_items(&walked, &entries, &programs));
         }
     }
+    // Explorer folders (ADR-0004 D7): every non-excluded folder under the user profile becomes a
+    // `Folder` item on the `explorer` surface, styled via `desktop.ini` exactly like a desktop
+    // folder. Best-effort per-root doctrine: a missing/locked-down profile root NARROWS the
+    // surface instead of failing the scan. [WINDOWS-VERIFY] runtime.
+    if let Some(profile) = known_folders::profile_root() {
+        let mut explorer_items = Vec::new();
+        walk_explorer_folders(&profile, &mut explorer_items);
+        // The DESKTOP surface already styles the top-level folders on the desktop, and the profile
+        // walk descends into the Desktop folder too — the same folder would otherwise surface twice
+        // under one `ItemId` (once desktop, once explorer). Keep the FIRST (the desktop-labeled
+        // item) and drop the explorer duplicate so the ledger/commit never address one folder twice.
+        let seen: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
+        items.extend(explorer_items.into_iter().filter(|i| !seen.contains(&i.path)));
+    }
     // Oracle sorts by name, current-culture case-insensitive; ASCII-lowercase is the closest
     // portable approximation and is corrected on the Windows box if a locale diff surfaces.
     items.sort_by_key(|item| item.name.to_lowercase());
@@ -320,6 +334,151 @@ fn walk_dir(
     }
 }
 
+/// Caps for the `explorer` folder walk (ADR-0004 D7). A depth cap + folder-count cap keep a freak
+/// tree from stalling the scan or emitting tens of thousands of items (the owner's profile holds a
+/// repo — `target`/`node_modules` alone dwarf everything else, and the denylist below already cuts
+/// them, but the caps are the hard backstop). Tunable.
+const EXPLORER_MAX_DEPTH: u32 = 8;
+const EXPLORER_MAX_FOLDERS: usize = 1400;
+
+/// Directory names that are build/VCS/cache/package artifacts — never styled. Writing
+/// `desktop.ini` into them is catastrophic for perf + restore and invisible to the user anyway.
+/// Case-insensitive. The DOT-prefixed entries are additionally caught wholesale by the
+/// dot-prefix gate in the walk (belt-and-suspenders); the explosive build trees (`node_modules`,
+/// `target`, `bin`, `obj`, …) are cut by name so they never fill the count cap. The DEPTH cap is
+/// the backstop for arbitrary tooling internals: the owner box's
+/// `Documents\godot\…\android-sdk\…\res\values-*` explosion lives at depth 9 — under this cap it
+/// is never reached, so no budget is spent there and no `desktop.ini` lands in the SDK.
+const EXPLORER_DENYLIST: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "bin",
+    "obj",
+    "__pycache__",
+    "venv",
+    "packages",
+    // Tooling SDKs — a user never browses these for icons and they hold deep explosions
+    // (`android-sdk\cmdline-tools\latest\lib\zipflinger`, NDK python stdlib, …). Cutting the root
+    // keeps every `desktop.ini` out of the SDK (owner box: `Documents\godot\…\android-sdk`).
+    "android-sdk",
+    "cmdline-tools",
+    "platform-tools",
+    "build-tools",
+    "system-images",
+    ".git",
+    ".svn",
+    ".hg",
+    ".venv",
+    ".cache",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".gradle",
+    "AppData",
+];
+
+/// Emits the user profile's FOLDER items for the `explorer` surface (ADR-0004 D7). Unlike the
+/// Start menu (whose folders are containers only), a folder here is BOTH an item (its
+/// `desktop.ini` gets styled) AND a container (we descend to its subfolders). Files are never
+/// emitted — global file-type icons are constitutionally banned (ADR-0004 D7). Best-effort: an
+/// unreadable subfolder is skipped, never a scan failure.
+///
+/// **Breadth-first, not depth-first.** The per-scan icon-preview budget (`SCAN_SOURCE_BUDGET` in
+/// the host) is SHARED across every surface and, once exhausted, turns the remaining items
+/// `Icons_Reason_TooMany` → not-styleable. A DFS would dive into the first huge subtree — the
+/// owner box: `Documents\godot\…\android-sdk\…\res\values-*`, thousands of dirs — and spend the
+/// whole budget there, starving the profile's LATER content folders (Pictures, Music, Videos, …)
+/// of a preview. BFS emits the shallow, browsable content FIRST, so the budget is spent on what
+/// the user actually browses and only ever overflows onto deep tooling junk (fine to leave
+/// not-styleable). The depth cap additionally cuts a depth-9+ explosion outright.
+fn walk_explorer_folders(root: &Path, items: &mut Vec<DesktopItem>) {
+    let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
+        std::collections::VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0));
+    let mut count = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        if count >= EXPLORER_MAX_FOLDERS {
+            break;
+        }
+        // At the depth ceiling: don't even read this dir's children (they'd be depth+1 > cap).
+        if depth >= EXPLORER_MAX_DEPTH {
+            continue;
+        }
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                log::warn!("explorer scan skipped unreadable folder {}: {e}", dir.display());
+                continue;
+            }
+        };
+        for entry in rd.flatten() {
+            if count >= EXPLORER_MAX_FOLDERS {
+                break;
+            }
+            // The explorer surface styles FOLDERS (+ drives, enumerated separately); files are
+            // skipped here because file-type icons are banned (ADR-0004 D7).
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_entry(&file_name) {
+                continue;
+            }
+            // Dot-prefixed dirs (`.git`, `.bun`, `.vscode`, `.cargo`, `.venv`, `.cache`, `.local`, …)
+            // are the Windows convention for tooling/package caches — dot-prefix is NOT an attribute
+            // hidden bit, so the attribute gate below misses them. They hold thousands of store
+            // subfolders that blow the preview budget and starve every REAL folder past them into
+            // `Icons_Reason_TooMany` → not-styleable (owner-box `.bun\install\cache` report
+            // 2026-10-13). Skip them wholesale — a user never browses them for icons.
+            if file_name.starts_with('.')
+                || EXPLORER_DENYLIST.iter().any(|d| file_name.eq_ignore_ascii_case(d))
+            {
+                continue;
+            }
+            let path = entry.path();
+            let path_str = match path.to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            // Attribute exclusions: hidden, system, or a reparse point. Hidden/System covers
+            // `AppData` and app-managed trees (what Explorer hides by default — the owner never
+            // sees them). Reparse is skipped so we never write `desktop.ini` *through* a
+            // junction/symlink and never cycle (OneDrive, redirected Documents). An unreadable
+            // attribute read fails closed.
+            match crate::shell::attrs::get(&path_str) {
+                Ok(a) => {
+                    if a & (crate::shell::attrs::HIDDEN | crate::shell::attrs::SYSTEM) != 0 {
+                        continue;
+                    }
+                    if a & crate::shell::attrs::REPARSE_POINT != 0 {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+            count += 1;
+            items.push(DesktopItem {
+                id: ItemId::from_source_path("filesystem", &path_str),
+                name: display_name(&file_name, ItemKind::Folder),
+                icon: read_icon_source(ItemKind::Folder, &path_str),
+                path: path_str,
+                kind: ItemKind::Folder,
+                surface: ItemSurface::Explorer,
+                parent: String::new(),
+                state: ItemState::Ready,
+                requires_explicit_consent: false,
+                status_message: None,
+            });
+            // Enqueue for descent (breadth-first): processed AFTER every already-queued shallower
+            // folder, so a deep subtree never preempts shallow content for the count cap / budget.
+            queue.push_back((path, depth + 1));
+        }
+    }
+}
+
 /// The shell parsing name for the Recycle Bin (the canonical CLSID form; the oracle's
 /// `shell:RecycleBinFolder` resolves to the same folder).
 const RECYCLE_BIN_PARSING: &str = "::{645FF040-5081-101B-9F08-00AA002F954E}";
@@ -500,6 +659,41 @@ mod tests {
         let mut items = Vec::new();
         walk_root(&spec(surface, root, recurse, false), &mut items).unwrap();
         items
+    }
+
+    #[test]
+    fn the_explorer_walk_emits_folders_recurses_and_honors_exclusions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Visible folders: emitted AND descended into (a folder is both item + container).
+        touch(root, "Docs/a.txt");
+        touch(root, "Docs/Sub/b.txt");
+        // A denylist dir: skipped entirely, including its descent (the repo's target/node_modules).
+        touch(root, "node_modules/dep/c.txt");
+        // A loose file at the root: never an explorer item (file-type icons are banned, ADR-0004 D7).
+        touch(root, "loose.txt");
+        // A hidden folder (attribute-gated, like AppData): skipped.
+        let hidden = root.join("Secret");
+        std::fs::create_dir_all(&hidden).unwrap();
+        crate::shell::attrs::set(&hidden.to_string_lossy(), crate::shell::attrs::HIDDEN).unwrap();
+
+        let mut items = Vec::new();
+        walk_explorer_folders(root, &mut items);
+
+        let paths: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
+        let p = |s: &str| root.join(s).to_string_lossy().into_owned();
+        // Emitted: the visible child folder AND the descended subfolder.
+        assert!(paths.contains(&p("Docs")), "visible folder emitted");
+        assert!(paths.contains(&p("Docs\\Sub")), "subfolder emitted via descent");
+        // Skipped: the denylist dir + its descent, the hidden folder, and the loose file.
+        assert!(!paths.contains(&p("node_modules")), "denylist dir skipped");
+        assert!(!paths.contains(&p("node_modules\\dep")), "denylist descent skipped");
+        assert!(!paths.contains(&p("Secret")), "hidden folder skipped");
+        assert!(!paths.contains(&p("loose.txt")), "files are never explorer items");
+        // Every emitted item is a Folder on the explorer surface.
+        assert!(items
+            .iter()
+            .all(|i| i.kind == ItemKind::Folder && i.surface == ItemSurface::Explorer));
     }
 
     #[test]

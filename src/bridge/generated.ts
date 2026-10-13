@@ -397,11 +397,12 @@ export type SettingsPatch = {
 
 /**
  *  WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
- *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Serialized camelCase
- *  to match the TS union `'desktop' | 'taskbar' | 'startMenu'`. `#[serde(default)]` reads an
- *  absent field as `Desktop`, so a downgraded/older host degrades to the classic surface.
+ *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), a Start menu shortcut, or File Explorer (the
+ *  profile's folders + fixed drives, ADR-0004 D7). Serialized camelCase to match the TS union
+ *  `'desktop' | 'taskbar' | 'startMenu' | 'explorer'`. `#[serde(default)]` reads an absent field
+ *  as `Desktop`, so a downgraded/older host degrades to the classic surface.
  */
-export type SurfaceDto = "desktop" | "taskbar" | "startMenu";
+export type SurfaceDto = "desktop" | "taskbar" | "startMenu" | "explorer";
 
 /**
  *  Environment snapshot for the diagnostics report (mirrors the TS `SystemInfoDto`). Returned by
