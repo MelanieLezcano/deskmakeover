@@ -146,18 +146,27 @@ fn yes() -> bool {
     true
 }
 
-/// Per-SURFACE participation (ADR-0024). The OPPOSITE default of [`KindPolicyJson`], on purpose:
-/// every leg derives FALSE, so a recipe with a MISSING `surfaces` (and a missing leg inside an
-/// explicit one) means OPTED OUT — the taskbar and Start menu are NEW write surfaces whose
-/// consent must never be inherited from an existing recipe; the user flips them on explicitly.
+/// Per-SURFACE participation (ADR-0024). Default amended by the owner 2026-10-12: every leg
+/// defaults TRUE, so a recipe with a MISSING `surfaces` (and a missing leg inside an explicit
+/// one) PARTICIPATES — system-wide restyling is the app's promise, the same
+/// participate-by-default rule as [`KindPolicyJson`]. Opting a surface OUT is explicit.
 /// The desktop is not a leg here: it is never surface-gated (see `StyleRecipe::participates`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SurfacesJson {
     /// Taskbar pins (`…\User Pinned\TaskBar\*.lnk`).
     pub taskbar: bool,
     /// Start menu shortcuts (user + all-users roots), camelCase `startMenu` on the wire.
     pub start_menu: bool,
+}
+
+impl Default for SurfacesJson {
+    fn default() -> Self {
+        Self {
+            taskbar: true,
+            start_menu: true,
+        }
+    }
 }
 
 impl SurfacesJson {
@@ -554,14 +563,16 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_default_to_opted_out_but_the_desktop_is_never_gated() {
-        // ADR-0024: the NEW surfaces are opt-in CONSENT — a recipe with no `surfaces` key styles
-        // the taskbar/Start menu NOWHERE. Deliberately the OPPOSITE of kindPolicy's
-        // participate-by-default: an existing recipe must never inherit consent to write new
-        // surfaces. The desktop itself is never surface-gated — it is the app's core promise.
+    fn surfaces_default_to_participate_but_the_desktop_is_never_gated() {
+        // ADR-0024 default amended by the owner 2026-10-12: every surface participates BY
+        // DEFAULT (system-wide restyling is the app's promise — same rule as kindPolicy). An
+        // explicit OFF leg still gates, and the desktop is never surface-gated (core promise).
         let recipe: StyleRecipe =
             serde_json::from_value(json!({ "config": base_config(), "typeOverrides": {} })).unwrap();
-        assert!(!recipe.surfaces.taskbar && !recipe.surfaces.start_menu, "both legs default off");
+        assert!(
+            recipe.surfaces.taskbar && recipe.surfaces.start_menu,
+            "both legs default on"
+        );
         assert!(recipe
             .effective_config(ItemKind::Shortcut, true, ItemSurface::Desktop)
             .unwrap()
@@ -569,32 +580,52 @@ mod tests {
         assert!(recipe
             .effective_config(ItemKind::Shortcut, true, ItemSurface::Taskbar)
             .unwrap()
-            .is_none());
+            .is_some());
         assert!(recipe
             .effective_config(ItemKind::Shortcut, true, ItemSurface::StartMenu)
             .unwrap()
+            .is_some());
+        // An explicit opt-OUT still gates that surface (RESTORE-FIRST: disabling a surface
+        // makes its items ride restoreIds on the next apply).
+        let gated: StyleRecipe = serde_json::from_value(json!({
+            "config": base_config(),
+            "typeOverrides": {},
+            "surfaces": { "taskbar": false }
+        }))
+        .unwrap();
+        assert!(gated
+            .effective_config(ItemKind::Shortcut, true, ItemSurface::Taskbar)
+            .unwrap()
             .is_none());
+        assert!(gated
+            .effective_config(ItemKind::Shortcut, true, ItemSurface::StartMenu)
+            .unwrap()
+            .is_some());
+        assert!(gated
+            .effective_config(ItemKind::Shortcut, true, ItemSurface::Desktop)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
-    fn an_enabled_surface_leg_grants_only_that_surface_and_a_missing_leg_stays_off() {
+    fn an_explicit_off_leg_grants_only_the_other_surface_and_a_missing_leg_defaults_on() {
         let s = style(json!({
             "config": base_config(),
             "kindPolicy": {},
             "typeOverrides": {},
-            "surfaces": { "taskbar": true, "startMenu": true }
+            "surfaces": { "taskbar": false, "startMenu": true }
         }));
         let recipe = StyleRecipe::parse(&s).unwrap();
         assert!(recipe
             .effective_config(ItemKind::Shortcut, true, ItemSurface::Taskbar)
             .unwrap()
-            .is_some());
+            .is_none());
         assert!(recipe
             .effective_config(ItemKind::Shortcut, true, ItemSurface::StartMenu)
             .unwrap()
             .is_some());
-        // A leg MISSING from an explicit `surfaces` object still defaults to off (per-field
-        // default — `#[serde(rename_all = "camelCase", default)]` on the container).
+        // A leg MISSING from an explicit `surfaces` object takes the struct default
+        // (participate — `impl Default for SurfacesJson`, 2026-10-12).
         let s2 = style(json!({
             "config": base_config(),
             "kindPolicy": {},
@@ -605,7 +636,7 @@ mod tests {
         assert!(recipe2
             .effective_config(ItemKind::Shortcut, true, ItemSurface::StartMenu)
             .unwrap()
-            .is_none());
+            .is_some());
         assert!(recipe2
             .effective_config(ItemKind::Shortcut, true, ItemSurface::Taskbar)
             .unwrap()

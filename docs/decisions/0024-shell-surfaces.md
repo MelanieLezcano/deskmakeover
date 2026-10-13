@@ -46,10 +46,13 @@
    `FOLDERID_Programs`, `FOLDERID_CommonPrograms`); Start menu walks recursively (depth
    cap, reparse skip). Desktop behavior is untouched.
 2. **Participation, not look**: a persisted `surfaces: { taskbar, startMenu }` axis rides
-   the module state beside `kindPolicy` (default **OFF — opt-in**), whitelisted by the
+   the module state beside `kindPolicy` (default **ON — participate**, owner decision
+   2026-10-12 amending the original all-OFF opt-in: system-wide restyling is the app's
+   promise, so the default matches kindPolicy's participate-by-default), whitelisted by the
    normalizers on BOTH bridge sides, and never in `ConfigDto` (presets/history stay clean,
    same rule as spec 06 §6 kindPolicy). Cascade: `styleable:false > per-icon override >
-   kindPolicy > surface gate`.
+   kindPolicy > surface gate`. Opting a surface OUT is explicit and, as before,
+   RESTORE-FIRST (a disabled surface's items ride restoreIds on the next apply).
 3. **D7 amended, scenery preserved**: the strip's TRAY/clock/Start-flag chrome stays
    decorative and non-interactive; what changes is that the pinned row renders the USER'S
    REAL pins as ordinary tiles (hover try-on, owned-verb menu, exception badges — the §3

@@ -60,10 +60,13 @@ export function kindParticipates(kind: IconKind, policy: KindPolicy): boolean {
 
 // ---- Surface participation (ADR-0024) — the second participation axis --------
 
-/** Every NEW write surface starts OPTED OUT (ADR-0024): consent to write the
- *  taskbar / Start menu is granted explicitly, never inherited — deliberately
- *  the OPPOSITE default of kindPolicy's participate-by-default. */
-export const DEFAULT_SURFACES: Surfaces = { taskbar: false, startMenu: false }
+/** Every shell surface participates BY DEFAULT (owner decision 2026-10-12,
+ *  amending ADR-0024's original all-OFF opt-in): the app's promise is
+ *  system-wide restyling, so a fresh recipe styles the taskbar and Start menu
+ *  too — the SAME participate-by-default rule as kindPolicy. Opting a surface
+ *  OUT is explicit (and disabling one auto-restores it on the next apply,
+ *  RESTORE-FIRST). */
+export const DEFAULT_SURFACES: Surfaces = { taskbar: true, startMenu: true }
 
 /** The `surfaces` legs — a CLOSED whitelist (G11): only these keys exist, any
  *  other key in a `surfaces` object is dropped on read (additive tolerance,
@@ -86,8 +89,8 @@ export function surfaceParticipates(surface: Surface, surfaces: Surfaces): boole
 /** G11 normalizer for a recipe's `surfaces` leg: undefined → undefined (absent
  *  — a style-only preset stays clean); null/non-object → null (REJECT the
  *  recipe, never render garbage); unknown keys dropped; a KNOWN key with a
- *  non-boolean value rejects the whole leg. Missing known legs default off
- *  (opt-in consent must never be inferred). */
+ *  non-boolean value rejects the whole leg. Missing known legs take
+ *  [`DEFAULT_SURFACES`] (participate — the owner's default, 2026-10-12). */
 export function normalizeSurfaces(raw: unknown): Surfaces | undefined | null {
   if (raw === undefined) return undefined
   if (raw === null || typeof raw !== 'object') return null

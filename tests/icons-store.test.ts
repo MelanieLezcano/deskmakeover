@@ -191,19 +191,21 @@ describe('effective tile config (override folding)', () => {
 
   test('surface gate (ADR-0024): a disabled surface renders original, even under a tint override', () => {
     const pin = item('p', { surface: 'taskbar' })
-    // Omitted surfaces = the DEFAULT (opted out) — a taskbar pin renders original.
-    expect(effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY).showOriginal).toBe(true)
-    // With the leg ON the pin inherits the global config (no per-surface config exists in v1).
+    // Omitted surfaces = the DEFAULT (participate — owner decision 2026-10-12) — a pin styles.
+    expect(effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY).showOriginal).toBe(false)
+    // With a leg ON the pin inherits the global config (no per-surface config exists in v1).
     const on = effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: true, startMenu: false })
     expect(on.showOriginal).toBe(false)
     expect(on.config).toEqual({ ...config, autoSeparation: true })
     // OFF again → original; the tile also rides restoreIds in apply() (auto-restore).
     expect(
-      effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: false }).showOriginal,
+      effectiveTileConfig(pin, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true }).showOriginal,
     ).toBe(true)
     // A per-icon tint NEVER rescues a surface the user turned off (RESTORE-FIRST).
     const tinted = item('p2', { surface: 'taskbar', overrideMode: 'tint', overrideTint: '#3FB6A8' })
-    expect(effectiveTileConfig(tinted, config, DEFAULT_KIND_POLICY, undefined, DEFAULT_SURFACES).showOriginal).toBe(true)
+    expect(
+      effectiveTileConfig(tinted, config, DEFAULT_KIND_POLICY, undefined, { taskbar: false, startMenu: true }).showOriginal,
+    ).toBe(true)
   })
 
   test('surface gate: the desktop is NEVER gated — kindPolicy alone governs it', () => {
@@ -444,21 +446,22 @@ describe('System-Default lens (spec 06 §3.13)', () => {
 describe('surface participation (ADR-0024)', () => {
   test('setSurface flips ONE leg as one undo step and marks the draft dirty', () => {
     // `dirty` only means "the live desktop differs from the draft", so it exists
-    // once a look is applied — mirror that state here.
+    // once a look is applied — mirror that state here. Legs default ON (2026-10-12),
+    // so the flip exercised here is ON → OFF.
     useIcons.setState({ state: { ...state(), applied: true } })
-    useIcons.getState().setSurface('taskbar', true)
-    expect(useIcons.getState().state!.surfaces.taskbar).toBe(true)
-    expect(useIcons.getState().state!.dirty).toBe(true)
-    expect(useIcons.getState().state!.surfaces.startMenu).toBe(false) // the other leg untouched
-    useIcons.getState().undo()
+    useIcons.getState().setSurface('taskbar', false)
     expect(useIcons.getState().state!.surfaces.taskbar).toBe(false)
+    expect(useIcons.getState().state!.dirty).toBe(true)
+    expect(useIcons.getState().state!.surfaces.startMenu).toBe(true) // the other leg untouched (default on)
+    useIcons.getState().undo()
+    expect(useIcons.getState().state!.surfaces.taskbar).toBe(true)
   })
 
   test('surface toggles are orthogonal to the System-Default lens (lens rule)', () => {
     const s = useIcons.getState()
     s.selectSystemDefault()
-    useIcons.getState().setSurface('startMenu', true)
-    expect(useIcons.getState().state!.surfaces.startMenu).toBe(true)
+    useIcons.getState().setSurface('startMenu', false)
+    expect(useIcons.getState().state!.surfaces.startMenu).toBe(false)
     expect(useIcons.getState().bareLook).toBe(true)
   })
 })

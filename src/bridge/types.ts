@@ -218,9 +218,10 @@ export type KindPolicy = Record<IconKindBucket, boolean>
  *  participation axis, ORTHOGONAL to kindPolicy — kindPolicy asks WHICH KINDS,
  *  this asks WHICH SHELL SURFACES. The desktop itself is not a leg (it is
  *  always on — the app's core promise, governed by kindPolicy alone); the two
- *  NEW write surfaces each default false: consent to write the taskbar /
- *  Start menu is opt-in, never inherited by an existing recipe. Not part of
- *  ConfigDto (same rule as kindPolicy) — rides the recipe's 4th key. */
+ *  NEW write surfaces each default true (owner decision 2026-10-12, amending
+ *  ADR-0024's original opt-out): a fresh or legacy recipe restyles the whole
+ *  shell; opting a surface OUT is explicit. Not part of ConfigDto (same rule
+ *  as kindPolicy) — rides the recipe's 4th key. */
 export interface Surfaces {
   taskbar: boolean
   startMenu: boolean
@@ -337,7 +338,7 @@ export interface IconsStateDto {
    *  host + future auto-format read the same map. Default: every bucket true. */
   kindPolicy: KindPolicy
   /** Per-surface participation (ADR-0024): which SHELL SURFACES the look writes.
-   *  Default false per leg — opt-in consent. The desktop is always on (not a leg). */
+   *  Default true per leg (owner decision 2026-10-12). The desktop is always on (not a leg). */
   surfaces: Surfaces
   /** Per-type style overrides (ADR-0017) — the look's type ladder. */
   typeOverrides: TypeOverrides
