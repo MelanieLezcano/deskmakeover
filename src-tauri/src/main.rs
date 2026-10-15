@@ -10,6 +10,13 @@ fn main() {
     // activated · 2 missing argument · 3 activation failed — the wrapper's own launch reports
     // honestly through the process exit code.
     let args: Vec<String> = std::env::args().collect();
+    // Uninstall-residue cleanup (plan "Uninstall residue" finding): the NSIS `NSIS_HOOK_PREUNINSTALL`
+    // hook runs this BEFORE the uninstaller removes our files, so a per-user uninstall REVERTS every
+    // surface we styled (icons across all surfaces + wallpaper + arrow overlay) instead of leaving
+    // residue. Never boots the GUI; exits with the restore's own status code.
+    if args.iter().any(|a| a == "--uninstall-restore") {
+        std::process::exit(deskmakeover_desktop_lib::run_uninstall_restore());
+    }
     if let Some(pos) = args.iter().position(|a| a == "--activate-aumid") {
         let code = match args.get(pos + 1) {
             Some(aumid) if !aumid.is_empty() => {
