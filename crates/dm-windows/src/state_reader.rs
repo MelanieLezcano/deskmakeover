@@ -17,7 +17,7 @@ use dm_domain::{
     PriorWrapper, RestoreAnchor, WrapperAnchor,
 };
 
-use crate::apply::{file_wrapper, recyclebin, system};
+use crate::apply::{drive, file_wrapper, recyclebin, system};
 use crate::classify::parse_icon_location;
 use crate::com::StaExecutor;
 use crate::durable::{read_capped, SHORTCUT_READ_CAP};
@@ -139,6 +139,13 @@ impl ItemStateReader for WindowsStateReader {
                 let (path, index) = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
                 Ok(SurfaceState::IconRef { path, index }.fingerprint())
             }
+            // A fixed drive: the effective per-drive `DefaultIcon` location (per-user override
+            // else the machine `DriveIcons` fallback — exactly what the shell shows).
+            ItemKind::Drive => {
+                let a = drive::read_current(&drive::letter_from_path(&target.path)?)?;
+                let icon = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
+                Ok(SurfaceState::Drive { icon }.fingerprint())
+            }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("fingerprint for {:?}", target.kind)))
             }
@@ -232,6 +239,15 @@ impl ItemStateReader for WindowsStateReader {
                 let locations = vec![default.clone(), empty.clone(), full.clone()];
                 Ok((SurfaceState::RecycleBin { default, empty, full }.fingerprint(), locations))
             }
+            // A fixed drive: the effective `DefaultIcon` is the live location, so a drive key
+            // already pointing into OUR asset store is visible to the provenance guard like any
+            // other kind (never re-read as "the original" after a ledger-row loss).
+            ItemKind::Drive => {
+                let a = drive::read_current(&drive::letter_from_path(&target.path)?)?;
+                let icon = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
+                let location = icon.clone();
+                Ok((SurfaceState::Drive { icon }.fingerprint(), vec![location]))
+            }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("fingerprint for {:?}", target.kind)))
             }
@@ -258,6 +274,9 @@ impl ItemStateReader for WindowsStateReader {
             ItemKind::RecycleBin => Ok(RestoreAnchor::RecycleBin(recyclebin::read_current()?)),
             ItemKind::System => {
                 Ok(RestoreAnchor::SystemIcon(system::read_current(&system::parse_clsid(&target.path)?)?))
+            }
+            ItemKind::Drive => {
+                Ok(RestoreAnchor::Drive(drive::read_current(&drive::letter_from_path(&target.path)?)?))
             }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("anchor for {:?}", target.kind)))

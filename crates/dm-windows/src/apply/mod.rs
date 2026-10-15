@@ -7,6 +7,7 @@ mod reg_icon;
 mod shortcut;
 mod url_shortcut;
 
+pub(crate) mod drive;
 pub(crate) mod file_wrapper;
 pub(crate) mod recyclebin;
 pub(crate) mod system;
@@ -60,6 +61,9 @@ impl IconApplier for WindowsIconApplier {
             // of the Recycle Bin. The CLSID rides the item's parsing path (`::{GUID}`).
             // [WINDOWS-VERIFY] runtime.
             ItemKind::System => system::apply(&system::parse_clsid(&target.path)?, &icon)?,
+            // A fixed drive styles via its per-user `DefaultIcon` registry value (ADR-0004 D7) —
+            // the letter rides the item's own path (`C:\` → `C`). Registry write, no COM.
+            ItemKind::Drive => drive::apply(&drive::letter_from_path(&target.path)?, &icon)?,
             // Only genuinely un-styleable (broken/unreadable) items remain.
             ItemKind::Unsupported => {
                 return Err(PortError::Unsupported(format!("apply for {:?}", target.kind)))
@@ -107,6 +111,20 @@ impl IconApplier for WindowsIconApplier {
                     )));
                 }
                 system::restore(state)
+            }
+            RestoreAnchor::Drive(anchor) => {
+                // Defence-in-depth (same discipline as the System CLSID check): the anchor's
+                // letter is interpolated into an HKCU per-drive key path, so it must match the
+                // drive the target path names — otherwise a mismatched pairing would mutate the
+                // WRONG drive's key and report success while the real target stays styled.
+                let target_letter = drive::letter_from_path(&target.path)?;
+                if !target_letter.eq_ignore_ascii_case(&anchor.letter) {
+                    return Err(PortError::Unsupported(format!(
+                        "Drive restore letter mismatch: target {target_letter} vs anchor {}",
+                        anchor.letter
+                    )));
+                }
+                drive::restore(anchor)
             }
             RestoreAnchor::CaptureFailed { reason } => {
                 Err(PortError::Unsupported(format!("no restore material: {reason}")))

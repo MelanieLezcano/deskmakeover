@@ -77,9 +77,12 @@ names the version number · repo made public (it exists, currently PRIVATE).
 
 ## Later — 第二战场 (Explorer)
 
-- **资源管理器 module**: folder icons (desktop.ini) + drive icons (registry
-  DriveIcons only — autorun.inf never), same shape×colour engine, per-surface
-  toggles, full restore.
+- **资源管理器 module** ✅ (landed 2026-10-13, `feat/taskbar-startmenu-surfaces` — ADR-0004 D7
+  amendment): folder icons (desktop.ini under the profile; hidden/reparse/build trees skipped) +
+  drive icons (per-user `HKCU\…\Applications\Explorer.exe\Drives\<L>\DefaultIcon` — in-host, no
+  elevation; never autorun.inf; HKLM `DriveIcons` read as original-fallback only), same
+  shape×colour engine, `explorer` per-surface toggle, full restore. ADR-0004's progid-level
+  file-type icons remain permanently out (constitution).
 - Global file-type-association icons: **permanently out** (constitution).
 
 ## Later — 代差 (moat)

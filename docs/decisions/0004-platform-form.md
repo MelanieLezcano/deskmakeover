@@ -95,3 +95,25 @@ exists in opposition to. The owner resolved the three open conflicts.
 - The module is named **清爽 / 清爽系统** (ADR-0023 decision 7); 净化/清理/优化 are banned
   copy for it. §2's "已帮你做的事" checklist grammar is refined by ADR-0023 decision 3
   (three-state honest results; verified writes only).
+
+## Amendment (2026-10-13 — D7 Explorer module landed)
+
+- **§7's folder half ships:** every folder under `FOLDERID_Profile` on a new `explorer` surface
+  (per-surface toggle, consent-gated like the others), styled via `desktop.ini` in-host (no
+  elevation — Warm tier per §4). The walk skips hidden/System-attribute trees (AppData), reparse
+  points, and build/VCS/deno trees, with depth + count caps, so a repo-heavy profile can never
+  stall the scan or get residue. Restore removes only our `desktop.ini` (byte-identical return).
+- **§7's drive half ships as the PER-USER key, not the HKLM one:** `HKCU\Software\Classes\
+  Applications\Explorer.exe\Drives\<L>\DefaultIcon` — an on-box spike proved the shell honors this
+  key (the `SHGetFileInfo("C:\")` icon changed and reverted), so drives are styled **in-host with
+  no elevation**, staying inside §4's Warm tier; the machine `HKLM\…\Explorer\DriveIcons` tree is
+  read ONLY as the original-icon fallback and is never written. `autorun.inf` stays untouched;
+  fixed drives only (removable/optical/network letters are never keyed).
+- **Original-icon recovery for drives never reads the live surface post-apply** (the same spike
+  showed the live read WOULD return our own asset → compounding): a captured registry value
+  resolves as an icon resource, and an absent value falls back to the static stock glyph
+  `shell32.dll,8`. Restore writes HKCU only and removes just the `(Default)` value we created
+  (recycle-bin posture: never `delete_subkey_all` over a key another program may share).
+- **Bucketing:** `ItemKind::Drive` rides the **Folder** bucket (an Explorer container the user
+  browses) — same policy switch, same `explorer`-surface consent; §7's ProgId `DefaultIcon` ban
+  is unchanged and the banned association icons were never built.

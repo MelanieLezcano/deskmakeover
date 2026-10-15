@@ -192,7 +192,12 @@ export interface GridDto {
  *  immutable thing is the PACKAGE asset, not the shortcut). The C# enum +
  *  writers + CanStyle updates land in the Windows batch. */
 export type IconKind =
-  | 'Shortcut' | 'UrlShortcut' | 'AppxShortcut' | 'RecycleBin' | 'SystemIcon' | 'Folder' | 'RegularFile'
+  | 'Shortcut' | 'UrlShortcut' | 'AppxShortcut' | 'RecycleBin' | 'SystemIcon' | 'Folder'
+  /** A fixed drive (ADR-0004 D7) — the explorer surface's drive half, styled
+   *  via its per-user registry DefaultIcon (routed by kind, distinct from the
+   *  folder desktop.ini writer). Buckets with Folder (same explorer consent). */
+  | 'Drive'
+  | 'RegularFile'
   /** Bare launcher on the desktop (绿色软件 .exe) — a PROGRAM in the user's
    *  mind, so it buckets with App, never with documents (ADR-0017 D1; host
    *  classifies by extension in the Windows batch, v1 scope `.exe` only). */

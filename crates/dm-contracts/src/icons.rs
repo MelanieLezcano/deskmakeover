@@ -43,6 +43,9 @@ pub enum IconKindDto {
     RecycleBin,
     SystemIcon,
     Folder,
+    /// A fixed drive (ADR-0004 D7) — the `explorer` surface's drive half, styled via its per-user
+    /// registry `DefaultIcon` (routed by `kind`, distinct from the folder `desktop.ini` writer).
+    Drive,
     RegularFile,
     ExecutableFile,
     Unsupported,
@@ -224,6 +227,7 @@ mod tests {
             (IconKindDto::RecycleBin, "\"RecycleBin\""),
             (IconKindDto::SystemIcon, "\"SystemIcon\""),
             (IconKindDto::Folder, "\"Folder\""),
+            (IconKindDto::Drive, "\"Drive\""),
             (IconKindDto::RegularFile, "\"RegularFile\""),
             (IconKindDto::ExecutableFile, "\"ExecutableFile\""),
             (IconKindDto::Unsupported, "\"Unsupported\""),

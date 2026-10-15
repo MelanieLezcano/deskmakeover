@@ -102,6 +102,28 @@ pub struct SystemIconAnchor {
     pub value: Option<RegistryValue>,
 }
 
+/// The captured original per-user `DefaultIcon` for one fixed drive (ADR-0004 D7). A drive has a
+/// SINGLE `(Default)` `DefaultIcon` value under the per-user
+/// `Software\Classes\Applications\Explorer.exe\Drives\<L>` key — the same one-value model as
+/// [`SystemIconAnchor`], but keyed by drive letter instead of CLSID.
+///
+/// `letter` is the drive letter WITHOUT a colon (`"C"`), mirroring the registry subkey name; it is
+/// carried here so restore can verify it targets the SAME drive the item path names (defence against
+/// a mismatched pairing, same discipline as [`SystemIconAnchor::clsid`]).
+///
+/// `key_existed` refers ONLY to the PER-USER (HKCU) key apply writes. `true` → rewrite `value`;
+/// `false` → REMOVE the value we created. `value` is the EFFECTIVE current `DefaultIcon` (per-user
+/// when present, else the machine `DriveIcons` fallback) captured for source extraction; the
+/// machine fallback keeps `key_existed:false` + `Some(value)` non-contradictory — the per-user key
+/// is absent yet the shell shows the machine icon, whose value source extraction must still read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveAnchor {
+    /// Drive letter without a colon, e.g. `"C"`.
+    pub letter: String,
+    pub key_existed: bool,
+    pub value: Option<RegistryValue>,
+}
+
 /// The exact-restore material for one item, discriminated by capture shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "anchor")]
@@ -123,6 +145,8 @@ pub enum RestoreAnchor {
     RecycleBin(RecycleBinAnchor),
     /// System desktop CLSID (This PC / Network / …) per-user `DefaultIcon` registry state.
     SystemIcon(SystemIconAnchor),
+    /// Fixed drive per-user `DefaultIcon` registry state (ADR-0004 D7).
+    Drive(DriveAnchor),
     /// The original did not exist on disk at all: a virtual AppsFolder (Store/MSIX) entry whose
     /// style target is a wrapper `.lnk` this app CREATES at apply time (Task 11, ADR-0024).
     /// Restore removes that wrapper — the desktop returns to "entry not materialized" (the Start

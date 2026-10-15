@@ -277,7 +277,7 @@ fn expand_env(value: &str) -> String {
 #[cfg(windows)]
 mod win {
     use dm_domain::{
-        DecodedImage, DesktopItem, DesktopIniAnchor, ItemKind, PortError, PortResult,
+        DecodedImage, DesktopItem, DesktopIniAnchor, DriveAnchor, ItemKind, PortError, PortResult,
         RecycleBinAnchor, RestoreAnchor, SystemIconAnchor,
     };
     use windows::core::{HSTRING, PCWSTR};
@@ -366,6 +366,10 @@ mod win {
             }
             RestoreAnchor::RecycleBin(a) => original_recycle_bin(a),
             RestoreAnchor::SystemIcon(a) => original_system(a),
+            // A fixed drive: recover the original from the CAPTURED registry state — the LIVE read
+            // is unsafe here (the spike proved `SHGetFileInfo` honours our per-user `Drives` key,
+            // so post-apply live IS our own asset → `Style(Style(orig))`).
+            RestoreAnchor::Drive(a) => original_drive(a),
             // Unreachable for AppxShortcut — its extraction short-circuits to the package glyph
             // before any anchor is consulted (Task 11) — but the match must stay exhaustive: a
             // FileAbsent anchor on any OTHER kind has no recoverable original here.
@@ -517,6 +521,31 @@ mod win {
         let empty =
             a.empty.as_ref().and_then(|v| resource_from_value(&v.raw)).unwrap_or_else(|| full.clone());
         Some(vec![full, empty])
+    }
+
+    /// The original fixed-drive icon, recovered WITHOUT reading the live surface (which post-apply
+    /// IS our own styled asset — `SHGetFileInfo` honours the per-user `Drives` key, so a live read
+    /// would compound `Style(Style(orig))`). Two cases, mirroring the folder/recycle-bin posture:
+    ///
+    /// 1. A captured value exists (per-user override, or the machine `DriveIcons` fallback when no
+    ///    per-user key existed) → resolve it as an icon resource — that is the user's TRUE original.
+    /// 2. NO value at all → the drive used the shell STOCK icon. Recover it from a STATIC resource
+    ///    (`shell32.dll,8` — "Hard drive / Local fixed disk"), never the live read — the same
+    ///    last-resort posture as `original_folder_image`'s `shell32.dll,3` stock folder. A static
+    ///    resource is override-free by construction, so no compounding is possible.
+    ///
+    /// Anchor fully unresolvable → `None` → terminal degrade upstream.
+    fn original_drive(a: &DriveAnchor) -> Option<Vec<DecodedImage>> {
+        if let Some(img) = a.value.as_ref().and_then(|v| resource_from_value(&v.raw)) {
+            return Some(vec![img]);
+        }
+        // The drive had NO custom icon: the theme's stock fixed-drive glyph. (The modern imageres
+        // variant drifts by build; shell32,8 is the stable classic disk icon — the same index the
+        // Change Icon dialog lists for "Hard drive".)
+        icon_resource_image(r"%SystemRoot%\system32\shell32.dll", 8)
+            .ok()
+            .flatten()
+            .map(|i| vec![i])
     }
 
     /// The AppsFolder package glyph for a Store/MSIX item (Task 11). The AUMID: the WRAPPER's own

@@ -180,6 +180,7 @@ fn kind_tag(kind: ItemKind) -> u8 {
         ItemKind::Folder => 5,
         ItemKind::RegularFile => 6,
         ItemKind::System => 7,
+        ItemKind::Drive => 8,
     }
 }
 

@@ -166,7 +166,12 @@ export type IconItemDto = {
  *  the TS `IconKind` union. `SystemIcon`/`ExecutableFile` are host-classification refinements the
  *  scanner assigns; the operations layer maps them onto its `ItemKind` write mechanisms.
  */
-export type IconKindDto = "Shortcut" | "UrlShortcut" | "AppxShortcut" | "RecycleBin" | "SystemIcon" | "Folder" | "RegularFile" | "ExecutableFile" | "Unsupported";
+export type IconKindDto = "Shortcut" | "UrlShortcut" | "AppxShortcut" | "RecycleBin" | "SystemIcon" | "Folder" | 
+/**
+ *  A fixed drive (ADR-0004 D7) — the `explorer` surface's drive half, styled via its per-user
+ *  registry `DefaultIcon` (routed by `kind`, distinct from the folder `desktop.ini` writer).
+ */
+"Drive" | "RegularFile" | "ExecutableFile" | "Unsupported";
 
 /**
  *  The THIN result of a mutating icon op (`applyBaked*` commit / `restore` / `restoreOverlay` /

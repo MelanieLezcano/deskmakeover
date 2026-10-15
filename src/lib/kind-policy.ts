@@ -35,6 +35,9 @@ export function kindBucket(kind: IconKind): IconKindBucket | null {
     case 'SystemIcon':
       return 'App'
     case 'Folder':
+    // A fixed drive is an Explorer container the user browses — it rides the
+    // Folder bucket: same policy switch, same explorer consent (ADR-0004 D7).
+    case 'Drive':
       return 'Folder'
     case 'RegularFile':
       return 'File'

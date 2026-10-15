@@ -144,6 +144,8 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
         let seen: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
         items.extend(explorer_items.into_iter().filter(|i| !seen.contains(&i.path)));
     }
+    // Explorer DRIVES (ADR-0004 D7): the surface's other half. [WINDOWS-VERIFY] runtime.
+    items.extend(explorer_drive_items());
     // Oracle sorts by name, current-culture case-insensitive; ASCII-lowercase is the closest
     // portable approximation and is corrected on the Windows box if a locale diff surfaces.
     items.sort_by_key(|item| item.name.to_lowercase());
@@ -479,6 +481,38 @@ fn walk_explorer_folders(root: &Path, items: &mut Vec<DesktopItem>) {
     }
 }
 
+/// The explorer surface's DRIVE half (ADR-0004 D7): one `Drive` item per visible FIXED root, each
+/// styled via its per-user registry `DefaultIcon` (routed by `kind`, distinct from the folder
+/// `desktop.ini` writer). A drive's display name comes from the shell exactly like the bin /
+/// namespace items ("SYSTEM (C:)"); an unresolvable shell name falls back to `(C:)` rather than
+/// dropping the drive. `icon` stays `None` by design — the effective icon is a LIVE shell read at
+/// extract time (`shell_item_image`), never a scan-time snapshot. Best-effort: an empty fixed-drive
+/// enumeration just narrows the surface (the `visible_fixed_drives` test owns the on-box proof).
+/// [WINDOWS-VERIFY] runtime.
+fn explorer_drive_items() -> Vec<DesktopItem> {
+    known_folders::visible_fixed_drives()
+        .into_iter()
+        .map(|drive_path| {
+            let letter = drive_path.chars().next().unwrap_or('?');
+            let name = shell_display_name(&drive_path)
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| format!("({letter}:)"));
+            DesktopItem {
+                id: ItemId::from_source_path("filesystem", &drive_path),
+                name,
+                path: drive_path,
+                kind: ItemKind::Drive,
+                surface: ItemSurface::Explorer,
+                parent: String::new(),
+                icon: None,
+                state: ItemState::Ready,
+                requires_explicit_consent: false,
+                status_message: None,
+            }
+        })
+        .collect()
+}
+
 /// The shell parsing name for the Recycle Bin (the canonical CLSID form; the oracle's
 /// `shell:RecycleBinFolder` resolves to the same folder).
 const RECYCLE_BIN_PARSING: &str = "::{645FF040-5081-101B-9F08-00AA002F954E}";
@@ -694,6 +728,28 @@ mod tests {
         assert!(items
             .iter()
             .all(|i| i.kind == ItemKind::Folder && i.surface == ItemSurface::Explorer));
+    }
+
+    #[test]
+    fn the_scan_emits_one_drive_item_per_fixed_root() {
+        // The drive half of the explorer surface: one item per `visible_fixed_drives` root, all
+        // carrying the shape the apply pipeline keys off — `kind=Drive` (routes to the per-user
+        // registry writer, not the `desktop.ini` one), `surface=Explorer` (governed by the
+        // explorer toggle, never rendered in the canvas), a stable filesystem id, and NO scan-time
+        // icon snapshot (the drive's effective icon is read live at extract time).
+        let drives = explorer_drive_items();
+        let roots = known_folders::visible_fixed_drives();
+        assert_eq!(drives.len(), roots.len(), "one item per fixed root");
+        assert!(drives.iter().any(|d| d.path == "C:\\"), "the system drive is styled");
+        for item in &drives {
+            assert_eq!(item.kind, ItemKind::Drive);
+            assert_eq!(item.surface, ItemSurface::Explorer);
+            assert!(item.path.ends_with(":\\"), "bare drive root, got {}", item.path);
+            assert_eq!(item.id, ItemId::from_source_path("filesystem", &item.path));
+            assert!(!item.name.trim().is_empty(), "every drive shows a name");
+            assert_eq!(item.state, ItemState::Ready);
+            assert!(item.icon.is_none(), "drive icon source is live, not scan-time");
+        }
     }
 
     #[test]

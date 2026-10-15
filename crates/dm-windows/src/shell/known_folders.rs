@@ -4,8 +4,10 @@
 use std::path::PathBuf;
 
 use dm_domain::{PortError, PortResult};
-use windows::core::GUID;
+use windows::core::{GUID, HSTRING};
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 use windows::Win32::UI::Shell::{
     SHGetKnownFolderPath, FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Profile,
     FOLDERID_Programs, FOLDERID_ProgramData, FOLDERID_PublicDesktop, FOLDERID_RoamingAppData,
@@ -122,6 +124,27 @@ pub fn profile_root() -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
+/// The FIXED drives visible on this machine (ADR-0004 D7) — the `explorer` surface's DRIVE half,
+/// e.g. `["C:\\", "D:\\", "E:\\"]`. Enumerated by probing every ASCII drive letter with
+/// `GetDriveTypeW` and keeping only `DRIVE_FIXED` roots: removable / optical / network / RAM-drive
+/// letters are transient or remote (a letter that can swap media or point at a share is the wrong
+/// thing to style a per-machine registry key for), so they are never returned. A letter with no
+/// volume reports `DRIVE_NO_ROOT_DIR` and simply drops out. Best-effort per-root doctrine: an empty
+/// enumeration NARROWS the explorer surface instead of failing the scan.
+///
+/// [WINDOWS-VERIFY] runtime (drive-type filtering on the owner box: C:/D:/E: fixed).
+pub fn visible_fixed_drives() -> Vec<String> {
+    (b'A'..=b'Z')
+        .filter_map(|letter| {
+            let root = format!("{}:\\", letter as char);
+            // SAFETY: `GetDriveTypeW` only reads the NUL-terminated path for the duration of the
+            // call; the `HSTRING` outlives it.
+            let drive_type = unsafe { GetDriveTypeW(&HSTRING::from(&root)) };
+            (drive_type == DRIVE_FIXED).then_some(root)
+        })
+        .collect()
+}
+
 fn known_folder(id: &GUID) -> PortResult<Option<PathBuf>> {
     // SAFETY: `SHGetKnownFolderPath` allocates a `PWSTR` that we own and free with
     // `CoTaskMemFree`; `to_string` reads the NUL-terminated buffer before it is freed.
@@ -135,5 +158,32 @@ fn known_folder(id: &GUID) -> PortResult<Option<PathBuf>> {
         let text = pwstr.to_string();
         CoTaskMemFree(Some(pwstr.0 as *const core::ffi::c_void));
         Ok(Some(PathBuf::from(text.map_err(|e| PortError::Com(e.to_string()))?)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_fixed_drives_includes_the_system_drive_and_is_well_formed() {
+        // Every Windows install has a fixed `C:` (the system drive), so this is a real smoke check
+        // that the `GetDriveTypeW` probe + `DRIVE_FIXED` filter work on a live box. Each entry must
+        // be a bare `<letter>:\` root — the exact shape `apply::drive::letter_from_path` parses back
+        // out (a malformed entry would surface later as a wrong per-drive registry key).
+        // [WINDOWS-VERIFY] runtime.
+        let drives = visible_fixed_drives();
+        assert!(
+            drives.iter().any(|d| d == "C:\\"),
+            "expected the fixed system drive among {drives:?}"
+        );
+        for d in &drives {
+            assert_eq!(d.len(), 3, "drive root must be exactly X:\\, got {d:?}");
+            assert!(d.ends_with(":\\"), "drive root must end in :\\, got {d:?}");
+            assert!(
+                d.starts_with(|c: char| c.is_ascii_alphabetic()),
+                "drive root must start with a letter, got {d:?}"
+            );
+        }
     }
 }

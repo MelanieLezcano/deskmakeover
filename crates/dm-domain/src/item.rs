@@ -58,6 +58,11 @@ pub enum ItemKind {
     RecycleBin,
     /// A folder — icon via a `desktop.ini` `IconResource`.
     Folder,
+    /// A fixed drive (ADR-0004 D7) — icon via a per-user registry `DefaultIcon` value under
+    /// `Software\Classes\Applications\Explorer.exe\Drives\<L>` (the current-user override; never
+    /// `autorun.inf`). Part of the `explorer` surface, routed by `kind`: the write mechanism
+    /// differs from folders even though both are Explorer items.
+    Drive,
     /// A loose file — styled by a companion wrapper `.lnk` with the original hidden.
     RegularFile,
     /// A system virtual item (This PC / Network / User Files / Control Panel) styled via the
@@ -219,6 +224,7 @@ mod tests {
             ItemKind::Shortcut,
             ItemKind::UrlShortcut,
             ItemKind::Folder,
+            ItemKind::Drive,
             ItemKind::RegularFile,
             ItemKind::RecycleBin,
             ItemKind::AppxShortcut,
@@ -290,6 +296,7 @@ mod tests {
             ItemKind::Shortcut,
             ItemKind::UrlShortcut,
             ItemKind::Folder,
+            ItemKind::Drive,
             ItemKind::RegularFile,
             ItemKind::RecycleBin,
             ItemKind::AppxShortcut,
@@ -327,7 +334,7 @@ mod tests {
         for kind in [ItemKind::Shortcut, ItemKind::UrlShortcut, ItemKind::AppxShortcut] {
             assert!(kind.is_shortcut(), "{kind:?} carries the shortcut mark");
         }
-        for kind in [ItemKind::Folder, ItemKind::RegularFile, ItemKind::RecycleBin, ItemKind::System] {
+        for kind in [ItemKind::Folder, ItemKind::Drive, ItemKind::RegularFile, ItemKind::RecycleBin, ItemKind::System] {
             assert!(!kind.is_shortcut(), "{kind:?} is not a shortcut");
         }
     }
