@@ -437,7 +437,7 @@ Honest exceptions measured on-box:
 
 Remaining checklist: hand-edit a pin → CAS conflict untouched ✅ (2026-10-12) ·
 restore → byte-identical FileBytes on pins/Start ✅ (2026-10-12: 94/94) ·
-uninstall residue `[pending]` · dev-loop hardening ✅ (worker posts
+uninstall residue ✅ MEASURED (2026-10-15) — see the finding below · dev-loop hardening ✅ (worker posts
 `ok:false`/`png:null` failure acks instead of swallowing init rejection;
 TEMP-DEBUG markers removed; `**/target/**` vite watch ignore landed) ·
 Task 11 on-box ship gates ✅ (2026-10-13: enumeration pin · 42 synthesized
@@ -446,6 +446,67 @@ AUMID property verified · click-to-launch PASSED via the implemented
 `--activate-aumid` launcher recipe after the explorer route failed a 4th
 confirmation · two full apply/restore cycles clean incl. ProgramData · then the
 HKLM WebView2 `AdditionalBrowserArguments` dev value + key form deleted).
+
+## Uninstall residue — measured 2026-10-15 (Task 9 check)
+
+**Finding: uninstalling does NOT revert the applied styling.** The Tauri NSIS
+uninstaller is configured with NO `installerHooks` (`tauri.conf.json` bundle →
+`nsis.installMode: currentUser` only), and the app has no headless restore CLI
+(`main.rs` handles only `--activate-aumid`). A per-user uninstall removes the
+install dir, the Start-Menu shortcut and the `…\Uninstall\DeskMakeover` entry,
+and leaves:
+
+- **Applied styling** (all surfaces): profile-folder `desktop.ini`, rewritten
+  `.lnk` `IconLocation`s (desktop / taskbar pins / Start menu), the per-user
+  `HKCU\Software\Classes\Applications\Explorer.exe\Drives\<L>\DefaultIcon` keys
+  (drive module), the machine `HKLM\…\Explorer\Shell Icons\29` arrow overlay,
+  any applied wallpaper, and Task-11 appx wrapper `.lnk`s.
+- **App data**: `%APPDATA%\com.xiaominglab.deskmakeover\` (settings.sqlite3,
+  `ledger.json`, `icon-assets\`, `look-history.json`, markers) and
+  `%LOCALAPPDATA%\com.xiaominglab.deskmakeover\` (WebView2 cache).
+- **ProgramData**: `C:\ProgramData\DeskMakeover\transparent-overlay.ico`
+  (the elevated overlay copy).
+
+Evidence on the owner box (2026-10-15): the styled state was live
+(`HKLM …Shell Icons\29 → C:\ProgramData\DeskMakeover\transparent-overlay.ico,0`,
+the three `HKCU …Drives\<L>` keys present, 418 profile `desktop.ini`, app data
+33 MB + 179 MB + 27 MB); the only `…\Uninstall` entry present was the OLD 0.1.1
+install (whose install dir was already gone). No restore path is wired to any
+uninstall.
+
+**Verdict:** a **gap** against the constitutional "one-click reversible with
+zero residue" promise — the SAME posture the module ships with today (the fork
+adds surfaces but no uninstall hook). It is **not** a regression from the
+taskbar/explorer work.
+
+**Fix — IMPLEMENTED 2026-10-15 (headless `--uninstall-restore` + NSIS hook):**
+1. `lib.rs::run_uninstall_restore()` reuses the `setup` composition roots
+   headlessly: `%APPDATA%\com.xiaominglab.deskmakeover` → `run_startup_recovery` →
+   `SettingsStore::open` → `build_icon_host` → `icons.restore()` +
+   `icons.restore_overlay()`, then `build_wallpaper_host` → `restore()` per
+   monitor, then `TweaksHost::restore()`. `main.rs` runs it on
+   `--uninstall-restore` (before booting the GUI) and exits with its status code.
+2. `bundle.windows.nsis.installerHooks` → `src-tauri/installer-hooks.nsh`, whose
+   `NSIS_HOOK_PREUNINSTALL` runs `"$INSTDIR\deskmakeover-desktop.exe"
+   --uninstall-restore` BEFORE files are removed, then drops `$APPDATA\<id>`,
+   `$LOCALAPPDATA\<id>` and `$PROGRAMDATA\DeskMakeover`. The HKLM overlay restore
+   raises ONE UAC (the uninstaller is per-user) — an explicit, honest trade.
+3. **Tested on-box 2026-10-15** (`deskmakeover-desktop.exe --uninstall-restore`
+   against a live applied state): exit 0; `HKLM …Shell Icons\29` removed (arrow
+   native); the three `HKCU …Drives\<L>` values cleared; 417/423 profile
+   `desktop.ini` removed. Gates green (cargo workspace · bun 670 · tsc · lint ·
+   bindings). The full install→apply→uninstall→verify loop and the UAC-on-uninstall
+   edge ride the owner-supervised live pass (needs a VM / clean install).
+
+**Residual caveat (pre-existing, NOT from this hook):** the ledger-based restore
+cannot reach ORPHAN `desktop.ini` that exist on disk with no ledger row. On the
+owner box 6 such files remained under `…\Documents\chibi-poser\dist\…` (a
+denylisted build tree — `node_modules` had ZERO, so the walk denylist works; the
+`dist` copies reference our asset but the parent folder is not styled and they are
+absent from `ledger.json`). They were likely styled by a pre-denylist explorer
+apply whose rows were later dropped, or copied in by an external build. A
+*scan-time rescue sweep* (remove `IconResource=…com.xiaominglab.deskmakeover…`
+`desktop.ini` the ledger does not own) would close this — recorded as a follow-up.
 
 ## Follow-ups (documented, out of v1)
 
