@@ -7,7 +7,7 @@ import { activePresetIdOf as activePresetIdOfRecipe, assembleIconsState, default
 import { serializeIconLook } from '@/lib/icon-look'
 import { recordObservedGrid } from '@/lib/observed-grid'
 import { useWallpaper } from '@/stores/wallpaper'
-import { getIconCompositor } from '@/icon-compositor/icon-renderer'
+import { getIconCompositor, tileStyleKey } from '@/icon-compositor/icon-renderer'
 import type { RenderOpts } from '@/icon-wasm/protocol'
 import type { SpreadEntry } from '@/icon-wasm/hue-spread'
 import { computeHueSpread } from '@/icon-wasm/hue-spread'
@@ -997,6 +997,16 @@ export const useIcons = create<IconsState>((set, get) => {
         await sourcesSettled()
         recomputeHueSpread()
         const frozenOpts = new Map(s.items.map((i) => [i.id, fieldRenderOpts(i.id)]))
+        // One master per unique (source pixels, style, opts) — NOT one per item (ADR-0004 D7
+        // amendment 2026-10-16): the explorer expansion styles thousands of folders that all
+        // share ONE stock-folder source, and re-rendering + re-encoding that identical PNG for
+        // every item makes an apply minutes of pure waste. The key is content+style based
+        // (`j.url` is content-addressed after the same amendment, so equal pixels → equal url),
+        // so two items that genuinely differ — different bucket in `opts`, shortcut mark, tint
+        // override — still bake their OWN master. Bounded: entries are the unique masters (a
+        // fully-unique item set must not pin every master in memory), oldest evicted first.
+        const bakeMemo = new Map<string, string>()
+        const BAKE_MEMO_MAX = 600
         // The session token binds every chunk + the commit to THIS begin, so a stale/superseded
         // apply's masters can never land in another apply's buffer (codex R3-Block 1).
         const sessionId = await bridge('icons.applyBakedBegin', { revision: s.revision, count: jobs.length })
@@ -1005,7 +1015,19 @@ export const useIcons = create<IconsState>((set, get) => {
           const rendered: { id: string; sourceIndex: number; masterPng: string }[] = []
           for (const j of chunk) {
             const eff = effectiveTileConfig(j.item, config, policy, typeOverrides, surfaces)
-            const png = await compositor.bakeMasterPng(bakeSourceId(j.item.id, j.sourceIndex), eff.config, j.item.isShortcut, frozenOpts.get(j.item.id))
+            const opts = frozenOpts.get(j.item.id)
+            const memoKey = `${j.url}|${j.item.isShortcut}|${tileStyleKey(eff.config, j.item.isShortcut, false, 256)}|${JSON.stringify(opts ?? null)}`
+            let png: string | null | undefined = bakeMemo.get(memoKey)
+            if (png === undefined) {
+              png = await compositor.bakeMasterPng(bakeSourceId(j.item.id, j.sourceIndex), eff.config, j.item.isShortcut, opts)
+              if (png) {
+                if (bakeMemo.size >= BAKE_MEMO_MAX) {
+                  const oldest = bakeMemo.keys().next()
+                  if (!oldest.done) bakeMemo.delete(oldest.value)
+                }
+                bakeMemo.set(memoKey, png)
+              }
+            }
             if (!png) throw new Error(`master missing: ${j.item.id}#${j.sourceIndex}`)
             rendered.push({ id: j.item.id, sourceIndex: j.sourceIndex, masterPng: png })
           }

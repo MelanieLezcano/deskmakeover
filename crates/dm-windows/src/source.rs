@@ -277,8 +277,8 @@ fn expand_env(value: &str) -> String {
 #[cfg(windows)]
 mod win {
     use dm_domain::{
-        DecodedImage, DesktopItem, DesktopIniAnchor, DriveAnchor, ItemKind, PortError, PortResult,
-        RecycleBinAnchor, RestoreAnchor, SystemIconAnchor,
+        DecodedImage, DesktopItem, DesktopIniAnchor, DriveAnchor, FileTypeAnchor, ItemKind,
+        PortError, PortResult, RecycleBinAnchor, RestoreAnchor, SystemIconAnchor,
     };
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::{HWND, SIZE};
@@ -331,6 +331,23 @@ mod win {
         if item.kind == ItemKind::RecycleBin {
             return extract_recycle_bin(item);
         }
+        // A file TYPE has no shell item to ask — its `path` IS the ProgId, not a filesystem path.
+        // The scan captured the type's effective `DefaultIcon` resource in `item.icon`, so that is
+        // the live original (styling only ever overrides the per-user value; if that value is
+        // ours, the caller passed an anchor and this branch was already terminal above).
+        if item.kind == ItemKind::FileType {
+            return match item
+                .icon
+                .as_ref()
+                .and_then(|r| icon_resource_image(&r.location, r.index).ok().flatten())
+            {
+                Some(i) => Ok(vec![i]),
+                None => Err(PortError::NotFound(format!(
+                    "no DefaultIcon resource extractable for {}",
+                    item.path
+                ))),
+            };
+        }
         // Shortcut kinds honour their explicit icon resource FIRST (the index matters — one DLL
         // holds many icons); everything else asks the shell for Explorer's exact image. Either
         // side falls back to the other, mirroring the oracle's two-way chain.
@@ -370,6 +387,9 @@ mod win {
             // is unsafe here (the spike proved `SHGetFileInfo` honours our per-user `Drives` key,
             // so post-apply live IS our own asset → `Style(Style(orig))`).
             RestoreAnchor::Drive(a) => original_drive(a),
+            // A file TYPE: same reasoning as the drive — the live per-user `DefaultIcon` may be
+            // our own asset after a ledger-row loss, so the original comes from the anchor only.
+            RestoreAnchor::FileType(a) => original_file_type(a),
             // Unreachable for AppxShortcut — its extraction short-circuits to the package glyph
             // before any anchor is consulted (Task 11) — but the match must stay exhaustive: a
             // FileAbsent anchor on any OTHER kind has no recoverable original here.
@@ -389,6 +409,22 @@ mod win {
         let value = match &a.value {
             Some(v) => Some(v.clone()),
             None => crate::apply::system::machine_value(&a.clsid).ok().flatten(),
+        };
+        value.and_then(|v| resource_from_value(&v.raw)).map(|i| vec![i])
+    }
+
+    /// The original file-TYPE icon, recovered ONLY from the captured registry state — the LIVE
+    /// per-user value may be our own styled asset (same compounding guard as drives: a value that
+    /// resolves to nothing after a ledger-row loss must degrade, never re-read the live surface).
+    /// `value` is the effective `DefaultIcon` (per-user when the key pre-existed, else the HKCR
+    /// machine default); when it is empty — our own restore leaves an empty per-user key — the
+    /// original was the machine class default, which styling never writes, so it is still the true
+    /// original and is read live (the `original_system` posture). A type with neither → `None` →
+    /// terminal degrade upstream.
+    fn original_file_type(a: &FileTypeAnchor) -> Option<Vec<DecodedImage>> {
+        let value = match &a.value {
+            Some(v) => Some(v.clone()),
+            None => crate::apply::filetype::machine_value(&a.prog_id).ok().flatten(),
         };
         value.and_then(|v| resource_from_value(&v.raw)).map(|i| vec![i])
     }
@@ -622,9 +658,29 @@ mod win {
 
     /// Extracts the best ≤`ICON_PX` frame of `location[,index]` as an HICON and rasterizes it.
     fn icon_resource_image(location: &str, index: i32) -> PortResult<Option<DecodedImage>> {
-        let path = expand_env(location);
-        if path.trim().is_empty() || !std::path::Path::new(&path).exists() {
+        let mut path = expand_env(location);
+        if path.trim().is_empty() {
             return Ok(None);
+        }
+        if !std::path::Path::new(&path).exists() {
+            // A BARE file name (`imageres.dll,-109` / `shell32.dll,-30`, common in older
+            // associations' `DefaultIcon`) resolves relative to the current directory, which never
+            // exists — so the type would degrade for a reason that has nothing to do with its icon.
+            // Retry against the system directory, the base Windows itself resolves bare DLL/exe
+            // names against (ADR-0004 D7 amendment 2026-10-16: file-type styling surfaces many
+            // such values). Only a SINGLE component qualifies: an explicit relative directory is
+            // never silently rebased. [WINDOWS-VERIFY] runtime.
+            if std::path::Path::new(&path).components().count() == 1 {
+                if let Ok(system_root) = std::env::var("SystemRoot") {
+                    let candidate = std::path::Path::new(&system_root).join("System32").join(&path);
+                    if candidate.exists() {
+                        path = candidate.to_string_lossy().into_owned();
+                    }
+                }
+            }
+            if !std::path::Path::new(&path).exists() {
+                return Ok(None);
+            }
         }
         // `PrivateExtractIconsW` takes a fixed NUL-terminated MAX_PATH (260) wide buffer — a
         // windows-rs projection limit, not ours. A longer path skips it and rides

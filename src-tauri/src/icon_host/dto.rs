@@ -36,6 +36,7 @@ pub(super) fn map_kind(k: ItemKind) -> IconKindDto {
         ItemKind::RecycleBin => IconKindDto::RecycleBin,
         ItemKind::Folder => IconKindDto::Folder,
         ItemKind::Drive => IconKindDto::Drive,
+        ItemKind::FileType => IconKindDto::FileType,
         ItemKind::RegularFile => IconKindDto::RegularFile,
         ItemKind::System => IconKindDto::SystemIcon,
         ItemKind::Unsupported => IconKindDto::Unsupported,

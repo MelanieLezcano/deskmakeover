@@ -118,10 +118,34 @@ pub fn user_programs_root() -> Option<PathBuf> {
 /// locked-down profile (the explorer folder surface is then skipped, like any other best-effort
 /// root). The walk beneath it applies the hidden/system/reparse/denylist exclusions.
 ///
+/// Retained as the FALLBACK of [`explorer_folder_roots`] (an empty fixed-drive enumeration still
+/// styles the profile) and for callers that need the profile specifically.
+///
 /// [WINDOWS-VERIFY] runtime.
 pub fn profile_root() -> Option<PathBuf> {
     let path = known_folder(&FOLDERID_Profile).ok().flatten()?;
     path.is_dir().then_some(path)
+}
+
+/// The roots the `explorer` surface's FOLDER walk starts from (ADR-0004 D7 amendment
+/// 2026-10-16): **every fixed drive root**, no longer the profile alone — so opening Explorer on
+/// `D:\` shows styled folders, not just `C:\Users\<me>`. Drive roots are disjoint by construction
+/// (each is a volume root), so no folder can be walked twice; the profile under `C:\Users\<me>` is
+/// reached through its own drive. Best-effort per-root doctrine: a box with no probeable fixed
+/// root falls back to the profile, and an unreadable root is skipped by the walk, never a scan
+/// failure. [WINDOWS-VERIFY] runtime.
+pub fn explorer_folder_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = visible_fixed_drives()
+        .iter()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .collect();
+    if roots.is_empty() {
+        if let Some(profile) = profile_root() {
+            roots.push(profile);
+        }
+    }
+    roots
 }
 
 /// The FIXED drives visible on this machine (ADR-0004 D7) — the `explorer` surface's DRIVE half,
@@ -183,6 +207,36 @@ mod tests {
             assert!(
                 d.starts_with(|c: char| c.is_ascii_alphabetic()),
                 "drive root must start with a letter, got {d:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn explorer_folder_roots_are_every_fixed_drive_root_covering_the_profile() {
+        // The all-drives explorer walk (ADR-0004 D7 amendment 2026-10-16): every root is an
+        // existing `<letter>:\` volume root, the system drive is always among them, and the user
+        // profile is REACHED through its drive (the walk no longer starts at the profile, it must
+        // still contain it — otherwise `C:\Users\<me>` would silently drop out of the surface).
+        // The no-fixed-drive fallback can only be proven on a box without one, so it is covered by
+        // the shape assertions + the profile containment below. [WINDOWS-VERIFY] runtime.
+        let roots = explorer_folder_roots();
+        assert!(!roots.is_empty(), "a box with fixed drives always has at least one walk root");
+        assert!(
+            roots.iter().any(|r| r.to_string_lossy() == "C:\\"),
+            "the system drive is a walk root: {roots:?}"
+        );
+        for r in &roots {
+            assert!(r.is_dir(), "walk root must exist: {}", r.display());
+            assert!(
+                r.to_string_lossy().ends_with(":\\"), 
+                "walk root must be a bare drive root, got {}", r.display()
+            );
+        }
+        if let Some(profile) = profile_root() {
+            assert!(
+                roots.iter().any(|root| profile.starts_with(root)),
+                "the profile must live under a walk root: profile {} not under {roots:?}",
+                profile.display()
             );
         }
     }
