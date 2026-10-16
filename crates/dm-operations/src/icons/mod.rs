@@ -22,6 +22,7 @@ pub mod version_switch;
 pub use package::{package_masters, BufferedMaster, PackagedItem};
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use dm_contracts::IconStyle;
 use dm_domain::{
@@ -91,7 +92,10 @@ pub struct IconApplySession {
     revision: u32,
     expected: usize,
     masters: Vec<BufferedMaster>,
-    /// Running total of buffered base64 bytes, for the host's cumulative-byte cap (audit F4).
+    /// Content-dedup index: one shared `Arc` per DISTINCT master payload (see [`Self::push`]).
+    seen: std::collections::HashSet<Arc<String>>,
+    /// Running total of buffered base64 bytes — DISTINCT payloads only, so it measures the memory
+    /// the session actually holds and the host's cumulative-byte cap stays a real memory guard.
     bytes: usize,
 }
 
@@ -104,18 +108,38 @@ impl IconApplySession {
             revision,
             expected: count,
             masters: Vec::with_capacity(count.min(MAX_PREALLOC_MASTERS)),
+            seen: std::collections::HashSet::new(),
             bytes: 0,
         }
     }
 
     /// Buffers one baked master. `source_index` 0 = primary, 1 = the paired empty (Recycle Bin).
-    pub fn push(&mut self, item_id: impl Into<String>, source_index: u32, png_base64: impl Into<String>) {
-        let png_base64 = png_base64.into();
-        self.bytes = self.bytes.saturating_add(png_base64.len());
+    ///
+    /// Identical payloads are stored ONCE and shared by `Arc` (owner 2026-10-16, all-drives
+    /// scale): an apply over thousands of folders uploads the same stock-glyph master once per
+    /// item, and a per-item copy made the cumulative-byte cap fire on a legitimate apply
+    /// ("apply session exceeded its 268435456-byte cumulative budget") while the truly distinct
+    /// data was a few MiB. Deduping by content keeps the cap meaningful: it bounds DISTINCT bytes,
+    /// which is the memory the session holds.
+    pub fn push(
+        &mut self,
+        item_id: impl Into<String>,
+        source_index: u32,
+        png_base64: impl Into<Arc<String>>,
+    ) {
+        let payload = png_base64.into();
+        let shared = match self.seen.get(&payload) {
+            Some(existing) => Arc::clone(existing),
+            None => {
+                self.bytes = self.bytes.saturating_add(payload.len());
+                self.seen.insert(Arc::clone(&payload));
+                payload
+            }
+        };
         self.masters.push(BufferedMaster {
             item_id: item_id.into(),
             source_index,
-            png_base64,
+            png_base64: shared,
         });
     }
 
