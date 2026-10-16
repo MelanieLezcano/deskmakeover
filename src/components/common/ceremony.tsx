@@ -108,12 +108,18 @@ export function ConfirmSheet({
 export function ConsentSheet({
   open,
   count,
+  taskbarCount = 0,
+  startMenuCount = 0,
   multiUser = false,
   onAgree,
   onCancel,
 }: {
   open: boolean
   count: number
+  /** ADR-0024: styleable items on the ENABLED extra surfaces (the caller gates
+   *  them by the surface legs). Both zero keeps the classic desktop-only copy. */
+  taskbarCount?: number
+  startMenuCount?: number
   multiUser?: boolean
   onAgree: () => void
   onCancel: () => void
@@ -121,6 +127,18 @@ export function ConsentSheet({
   const t = useT()
   const rows: { glyph: string; text: string }[] = [
     { glyph: '✓', text: t('ConsentWhatFormat').replace('{0}', String(count)) },
+    // ADR-0024 informed consent: when a surface leg is ON, name its exact scope
+    // and the non-goal (the shortcuts' icons only — never the apps' files).
+    ...(taskbarCount + startMenuCount > 0
+      ? [
+          {
+            glyph: '📌',
+            text: t('ConsentAlsoSurfaces')
+              .replace('{0}', String(taskbarCount))
+              .replace('{1}', String(startMenuCount)),
+          },
+        ]
+      : []),
     { glyph: '🛡', text: t('ConsentNot') },
     // Informed consent (owner 2026-07-17): applying restarts the shell so the desktop re-resolves
     // folder/.url custom icons (the only reliable refresh) — that closes any open folder windows.

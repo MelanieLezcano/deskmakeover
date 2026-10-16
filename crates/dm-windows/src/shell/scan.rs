@@ -6,7 +6,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dm_domain::{
-    DesktopItem, DesktopScanner, IconRef, IconSourceKind, ItemId, ItemKind, ItemState, PortResult,
+    DesktopItem, DesktopScanner, IconRef, IconSourceKind, ItemId, ItemKind, ItemState, ItemSurface,
+    PortResult,
 };
 
 use crate::classify::{classify_entry, display_name, is_ignored_entry};
@@ -31,6 +32,18 @@ impl DesktopScanner for WindowsScanner {
     }
 }
 
+/// One scan root and how it walks (ADR-0024). `surface` labels EVERY item found under the root —
+/// a root states its surface explicitly, so a new scan root can never silently masquerade as
+/// desktop truth. `recurse` descends into subfolders (the Start menu's app folders); `mandatory`
+/// makes an unreadable root fail the whole scan loud (only the user's own desktop is mandatory —
+/// 2026-07-19 vanish audit).
+struct RootSpec {
+    surface: ItemSurface,
+    path: std::path::PathBuf,
+    recurse: bool,
+    mandatory: bool,
+}
+
 /// The scan body, executed on the STA thread. [WINDOWS-VERIFY] runtime.
 fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
     let mut items = Vec::new();
@@ -38,78 +51,27 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
     // NAME, never by vector position — a failed user-desktop lookup errors instead of letting
     // the Public root masquerade as a successful empty scan.
     let (user_root, public_root) = known_folders::desktop_roots_labeled()?;
-    let roots: Vec<(std::path::PathBuf, bool)> = std::iter::once((user_root, true))
-        .chain(public_root.into_iter().map(|p| (p, false)))
-        .collect();
-    for (root, is_user) in &roots {
-        let read_dir = match std::fs::read_dir(root) {
-            Ok(rd) => rd,
-            // The USER desktop failing to enumerate must be LOUD (2026-07-19 vanish audit):
-            // silently treating it as empty binds the apply to a bogus "empty desktop" snapshot
-            // and the UI cannot tell a bare desktop from a broken scan (OneDrive Files-On-Demand
-            // hiccup, transient access denial). The PUBLIC root staying best-effort is deliberate
-            // — it is often absent/ACL-restricted on managed machines.
-            Err(e) if *is_user => {
-                return Err(dm_domain::PortError::Io(format!(
-                    "cannot enumerate the desktop folder {}: {e}",
-                    root.display()
-                )))
-            }
-            Err(e) => {
-                log::warn!("desktop scan skipped unreadable root {}: {e}", root.display());
-                continue;
-            }
-        };
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let file_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-            if is_ignored_entry(&file_name) {
-                continue;
-            }
-            // System-attributed items are invisible on the real desktop (oracle: Test-VisibleDesktopItem).
-            if has_system_attribute(&path) {
-                continue;
-            }
-            // A reparse point (symlink/junction) is not a safe styling target: writing desktop.ini
-            // or a .lnk through it would follow the link elsewhere. Skip it defensively.
-            if has_reparse_point(&path) {
-                continue;
-            }
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let kind = classify_entry(&file_name, is_dir);
-            // Use the path only if it round-trips as UTF-8. to_string_lossy would substitute U+FFFD
-            // for invalid units and silently corrupt the item id and every downstream path read, so
-            // skip a non-representable entry instead.
-            let path_str = match path.to_str() {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            // Wrapper reunification: a `.lnk` this app created around a loose file (the original
-            // sits beside it, Hidden+System, and IS the link target) re-presents as the ORIGINAL
-            // RegularFile item — same id, same kind — so the ledger row, the CAS surface, and the
-            // restore affordance all keep addressing one item across re-scans. Without this, every
-            // wrapped file mutates into a foreign Shortcut item after its first apply (the oracle
-            // shared this gap). [WINDOWS-VERIFY] runtime.
-            if kind == ItemKind::Shortcut {
-                if let Some(item) = reunify_wrapper(&path_str) {
-                    items.push(item);
-                    continue;
-                }
-            }
-            items.push(DesktopItem {
-                id: ItemId::from_source_path("filesystem", &path_str),
-                name: display_name(&file_name, kind),
-                icon: read_icon_source(kind, &path_str),
-                path: path_str,
-                kind,
-                state: ItemState::Ready,
-                requires_explicit_consent: false,
-                status_message: None,
-            });
-        }
+    let mut roots: Vec<RootSpec> = vec![RootSpec {
+        surface: ItemSurface::Desktop,
+        path: user_root,
+        recurse: false,
+        mandatory: true,
+    }];
+    if let Some(public) = public_root {
+        roots.push(RootSpec { surface: ItemSurface::Desktop, path: public, recurse: false, mandatory: false });
+    }
+    // Taskbar pins + Start menu roots (ADR-0024): best-effort exactly like the Public desktop — a
+    // locked-down edition that fails one lookup narrows the SURFACES covered instead of failing
+    // the whole scan. The pin root is flat; Start menu roots descend into app folders.
+    // [WINDOWS-VERIFY] runtime.
+    if let Some(pin) = known_folders::taskbar_pin_root() {
+        roots.push(RootSpec { surface: ItemSurface::Taskbar, path: pin, recurse: false, mandatory: false });
+    }
+    for menu in known_folders::start_menu_roots_labeled() {
+        roots.push(RootSpec { surface: ItemSurface::StartMenu, path: menu, recurse: true, mandatory: false });
+    }
+    for spec in &roots {
+        walk_root(spec, &mut items)?;
     }
     // The Recycle Bin is a VIRTUAL shell folder the filesystem enumeration can never see — inject
     // it explicitly so the mirror matches the real desktop 1:1 (oracle:
@@ -121,6 +83,8 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
             name,
             path: RECYCLE_BIN_PARSING.to_string(),
             kind: ItemKind::RecycleBin,
+            surface: ItemSurface::Desktop,
+            parent: String::new(),
             icon: None,
             state: ItemState::Ready,
             requires_explicit_consent: false,
@@ -144,6 +108,8 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
                 name,
                 path: parsing,
                 kind: ItemKind::System,
+                surface: ItemSurface::Desktop,
+                parent: String::new(),
                 icon: None,
                 state: ItemState::Ready,
                 requires_explicit_consent: false,
@@ -151,10 +117,207 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
             });
         }
     }
+    // Store/MSIX (AppsFolder) entries with no walked `.lnk` cover (Task 11, ADR-0024): a virtual
+    // Start-menu item per uncovered entry, so its icon becomes styleable through the wrapper
+    // recipe. A walked item's display name covering an entry means the classic `.lnk` (or our
+    // wrapper) already addresses that app — never synthesize a duplicate. Best-effort per root
+    // doctrine: a failed enumeration (locked-down shell) or a missing Programs root NARROWS the
+    // surface instead of failing the scan. [WINDOWS-VERIFY] runtime.
+    if let Ok(entries) = crate::shell::appsfolder::enumerate() {
+        if let Some(programs) = known_folders::user_programs_root() {
+            let walked: std::collections::HashSet<String> =
+                items.iter().map(|i| i.name.to_lowercase()).collect();
+            items.extend(synthesize_appx_items(&walked, &entries, &programs));
+        }
+    }
     // Oracle sorts by name, current-culture case-insensitive; ASCII-lowercase is the closest
     // portable approximation and is corrected on the Windows box if a locale diff surfaces.
     items.sort_by_key(|item| item.name.to_lowercase());
     Ok(items)
+}
+
+/// Synthesizes virtual Start-menu items for AppsFolder entries NOT already covered by a walked
+/// item name (Task 11). Pure — unit-tested on the Mac host; [`crate::shell::appsfolder`]
+/// enumerates the real list. Rules:
+/// * a display name matching any walked item (case-insensitive) → skip silently (the classic
+///   `.lnk` / our wrapper already covers that app);
+/// * a duplicate display name within the enumeration → first wins, later ones warn (the on-box
+///   probe found none, but the shell is third-party-extensible);
+/// * a display name that is not a safe file stem → skip + warn (the wrapper `.lnk` could never be
+///   created under it, so the prospective path would be a lie).
+/// The item's path is the PROSPECTIVE wrapper location `<user Programs root>\<DisplayName>.lnk` —
+/// the addressing anchor (ItemId) apply later writes to.
+fn synthesize_appx_items(
+    walked_names: &std::collections::HashSet<String>,
+    entries: &[crate::shell::appsfolder::AppsfolderEntry],
+    programs_root: &Path,
+) -> Vec<DesktopItem> {
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in entries {
+        let key = entry.display_name.to_lowercase();
+        if walked_names.contains(&key) {
+            continue;
+        }
+        if !seen.insert(key) {
+            log::warn!(
+                "appsfolder: duplicate display name {:?} skipped (first wins)",
+                entry.display_name
+            );
+            continue;
+        }
+        if !crate::classify::is_safe_file_stem(&entry.display_name) {
+            log::warn!(
+                "appsfolder: display name {:?} is not a safe file name; skipped",
+                entry.display_name
+            );
+            continue;
+        }
+        let path = programs_root.join(format!("{}.lnk", entry.display_name));
+        let path_str = match path.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        out.push(DesktopItem {
+            id: ItemId::from_source_path("filesystem", &path_str),
+            name: entry.display_name.clone(),
+            icon: None,
+            path: path_str,
+            kind: ItemKind::AppxShortcut,
+            surface: ItemSurface::StartMenu,
+            parent: String::new(),
+            state: ItemState::Ready,
+            requires_explicit_consent: false,
+            status_message: None,
+        });
+    }
+    out
+}
+
+/// Enumerate one root into `items`, honoring its surface + walk mode. The top-level `read_dir`
+/// failure follows `mandatory` (loud error vs. best-effort skip); subfolder failures during a
+/// recursive descent are ALWAYS best-effort (one locked app folder must not fail the scan).
+fn walk_root(spec: &RootSpec, items: &mut Vec<DesktopItem>) -> PortResult<()> {
+    let read_dir = match std::fs::read_dir(&spec.path) {
+        Ok(rd) => rd,
+        // The USER desktop failing to enumerate must be LOUD (2026-07-19 vanish audit):
+        // silently treating it as empty binds the apply to a bogus "empty desktop" snapshot
+        // and the UI cannot tell a bare desktop from a broken scan (OneDrive Files-On-Demand
+        // hiccup, transient access denial). The PUBLIC root staying best-effort is deliberate
+        // — it is often absent/ACL-restricted on managed machines.
+        Err(e) if spec.mandatory => {
+            return Err(dm_domain::PortError::Io(format!(
+                "cannot enumerate the desktop folder {}: {e}",
+                spec.path.display()
+            )))
+        }
+        Err(e) => {
+            log::warn!("scan skipped unreadable root {}: {e}", spec.path.display());
+            return Ok(());
+        }
+    };
+    walk_dir(spec, read_dir, "", 0, items);
+    Ok(())
+}
+
+/// The recursive walk behind [`walk_root`]. Each entry carries its `parent` — the subfolder path
+/// RELATIVE to the root (`""` at the root) — so the mirror can group Start menu tiles; desktop
+/// and taskbar roots are flat and always produce `""`. Use the path only if it round-trips as
+/// UTF-8: `to_string_lossy` would substitute U+FFFD for invalid units and silently corrupt the
+/// item id and every downstream path read, so a non-representable entry is skipped instead.
+/// [WINDOWS-VERIFY] runtime.
+fn walk_dir(
+    spec: &RootSpec,
+    read_dir: std::fs::ReadDir,
+    parent: &str,
+    depth: u32,
+    items: &mut Vec<DesktopItem>,
+) {
+    /// Depth cap for recursive surfaces: deep enough for every real Start menu tree, shallow
+    /// enough that a misattributed junction can never make the walk unbounded.
+    const START_MENU_MAX_DEPTH: u32 = 8;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if is_ignored_entry(&file_name) {
+            continue;
+        }
+        // System-attributed items are invisible on the real desktop (oracle: Test-VisibleDesktopItem).
+        if has_system_attribute(&path) {
+            continue;
+        }
+        // A reparse point (symlink/junction) is not a safe styling target: writing desktop.ini
+        // or a .lnk through it would follow the link elsewhere. Skip it defensively.
+        if has_reparse_point(&path) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && spec.recurse {
+            // A recursive surface's folders are CONTAINERS (the Start menu's app folders): descend
+            // into them instead of styling them. The folder itself never becomes an item — the
+            // start-menu surface styles its SHORTCUTS; the spec-06 taxonomy is unchanged.
+            if depth >= START_MENU_MAX_DEPTH {
+                continue;
+            }
+            let child = if parent.is_empty() { file_name } else { format!("{parent}\\{file_name}") };
+            match std::fs::read_dir(&path) {
+                Ok(rd) => walk_dir(spec, rd, &child, depth + 1, items),
+                Err(e) => log::warn!("scan skipped unreadable folder {}: {e}", path.display()),
+            }
+            continue;
+        }
+        if is_dir && spec.surface != ItemSurface::Desktop {
+            // Taskbar pins are a flat `.lnk` set by definition — a directory there is not a pin,
+            // and the desktop Folder taxonomy does not apply to it.
+            continue;
+        }
+        let mut kind = classify_entry(&file_name, is_dir);
+        let path_str = match path.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // Wrapper reunification: a `.lnk` this app created around a loose file (the original
+        // sits beside it, Hidden+System, and IS the link target) re-presents as the ORIGINAL
+        // RegularFile item — same id, same kind — so the ledger row, the CAS surface, and the
+        // restore affordance all keep addressing one item across re-scans. Without this, every
+        // wrapped file mutates into a foreign Shortcut item after its first apply (the oracle
+        // shared this gap). The reunified item inherits the ROOT's surface/parent — the label
+        // always comes from the root that found it (ADR-0024). [WINDOWS-VERIFY] runtime.
+        if kind == ItemKind::Shortcut {
+            if let Some(mut item) = reunify_wrapper(&path_str) {
+                item.surface = spec.surface;
+                item.parent = parent.to_string();
+                items.push(item);
+                continue;
+            }
+            // A `.lnk` whose ARGUMENTS are the AppsFolder URI is a Store/UWP shortcut (Task 11) —
+            // the args are the only reliable signal. One extra COM Load per `.lnk`; a failed or
+            // garbage read (test fixtures included) leaves the item an ordinary Shortcut, never a
+            // scan error.
+            let is_appx = shell_link::read_arguments(&path_str)
+                .ok()
+                .flatten()
+                .is_some_and(|args| crate::classify::parse_appx_aumid(&args).is_some());
+            if is_appx {
+                kind = ItemKind::AppxShortcut;
+            }
+        }
+        items.push(DesktopItem {
+            id: ItemId::from_source_path("filesystem", &path_str),
+            name: display_name(&file_name, kind),
+            icon: read_icon_source(kind, &path_str),
+            path: path_str,
+            kind,
+            surface: spec.surface,
+            parent: parent.to_string(),
+            state: ItemState::Ready,
+            requires_explicit_consent: false,
+            status_message: None,
+        });
+    }
 }
 
 /// The shell parsing name for the Recycle Bin (the canonical CLSID form; the oracle's
@@ -257,6 +420,10 @@ fn reunify_wrapper(lnk_path: &str) -> Option<DesktopItem> {
         icon: None,
         path: original.to_string(),
         kind: ItemKind::RegularFile,
+        // Placeholder: the walk that FOUND the wrapper overwrites surface/parent with its root's
+        // labels (ADR-0024) — wrappers are desktop-born, so desktop is the honest default.
+        surface: ItemSurface::Desktop,
+        parent: String::new(),
         state: ItemState::Ready,
         requires_explicit_consent: false,
         status_message: None,
@@ -310,4 +477,242 @@ fn has_reparse_point(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(surface: ItemSurface, root: &Path, recurse: bool, mandatory: bool) -> RootSpec {
+        RootSpec { surface, path: root.to_path_buf(), recurse, mandatory }
+    }
+
+    /// Creates a plain byte file at `rel` under `root` (mkdir -p). The walk treats `.lnk` names
+    /// as ordinary shortcut candidates: reunify's ownership gate rejects these foreign bytes
+    /// (no COM marker) exactly like a user's own shortcut.
+    fn touch(root: &Path, rel: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fixture").unwrap();
+    }
+
+    fn walk(root: &Path, surface: ItemSurface, recurse: bool) -> Vec<DesktopItem> {
+        let mut items = Vec::new();
+        walk_root(&spec(surface, root, recurse, false), &mut items).unwrap();
+        items
+    }
+
+    #[test]
+    fn a_flat_pin_root_yields_taskbar_items_with_an_empty_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Brave.lnk");
+        touch(dir.path(), "File Explorer.lnk");
+        let items = walk(dir.path(), ItemSurface::Taskbar, false);
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert_eq!(item.surface, ItemSurface::Taskbar);
+            assert_eq!(item.parent, "");
+            assert_eq!(item.kind, ItemKind::Shortcut);
+        }
+        // Display names drop the .lnk (the strip / Start panel label).
+        let mut names: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Brave".to_string(), "File Explorer".to_string()]);
+    }
+
+    #[test]
+    fn a_flat_desktop_root_keeps_folders_as_items_and_never_descends() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "mine.lnk");
+        touch(dir.path(), "Nested/child.lnk");
+        let items = walk(dir.path(), ItemSurface::Desktop, false);
+        // Desktop taxonomy unchanged: the folder is ONE Folder item; its child is not scanned.
+        assert!(items.iter().any(|i| i.name == "Nested" && i.kind == ItemKind::Folder));
+        assert!(!items.iter().any(|i| i.name == "child"));
+        assert!(items.iter().all(|i| i.surface == ItemSurface::Desktop && i.parent.is_empty()));
+    }
+
+    #[test]
+    fn a_recursive_start_menu_root_groups_items_by_relative_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Top.lnk");
+        touch(dir.path(), "WinRAR/WinRAR.lnk");
+        touch(dir.path(), "WinRAR/Tools/Archiver.lnk");
+        let items = walk(dir.path(), ItemSurface::StartMenu, true);
+        let find = |label: &str| items.iter().find(|i| i.name == label).unwrap_or_else(|| panic!("no {label}"));
+        assert_eq!(find("Top").parent, "");
+        assert_eq!(find("WinRAR").parent, "WinRAR");
+        assert_eq!(find("Archiver").parent, r"WinRAR\Tools");
+        // Start menu folders are CONTAINERS — descended into, never styled as items.
+        assert!(items.iter().all(|i| i.kind == ItemKind::Shortcut));
+        assert!(items.iter().all(|i| i.surface == ItemSurface::StartMenu));
+    }
+
+    #[test]
+    fn desktop_ini_stays_skipped_on_every_surface_root() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "desktop.ini");
+        touch(dir.path(), "app.lnk");
+        for (surface, recurse) in [(ItemSurface::Desktop, false), (ItemSurface::StartMenu, true)] {
+            let items = walk(dir.path(), surface, recurse);
+            assert_eq!(items.len(), 1, "{surface:?} must skip its own desktop.ini");
+            assert_eq!(items[0].name, "app");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_root_fails_loud_when_mandatory_and_narrows_when_best_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("never-created");
+        let mut items = Vec::new();
+        // Best-effort roots (taskbar / start menu / public desktop) narrow the surfaces covered.
+        walk_root(&spec(ItemSurface::Taskbar, &missing, false, false), &mut items).unwrap();
+        assert!(items.is_empty());
+        // The user's own desktop stays LOUD (the 2026-07-19 vanish audit).
+        assert!(walk_root(&spec(ItemSurface::Desktop, &missing, false, true), &mut items).is_err());
+    }
+
+    #[test]
+    fn a_recursive_walk_hits_the_depth_cap_instead_of_running_away() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "0/a.lnk");
+        let mut deep = String::from("0");
+        for level in 1..12 {
+            deep = format!("{deep}/d{level}");
+            touch(dir.path(), &format!("{deep}/f.lnk"));
+        }
+        let items = walk(dir.path(), ItemSurface::StartMenu, true);
+        for item in &items {
+            let comps = if item.parent.is_empty() { 0 } else { item.parent.split('\\').count() };
+            assert!(comps <= 8, "parent {:?} exceeded the depth cap", item.parent);
+        }
+        // The level-11 file (parent of 12 components) is beyond the cap: never scanned.
+        assert!(!items.iter().any(|i| i.parent.ends_with("d11")));
+        // In-range entries DID scan (7 f.lnk within cap + the root-level a.lnk).
+        assert_eq!(items.iter().filter(|i| i.name == "f").count(), 7);
+    }
+
+    #[test]
+    fn a_reparse_point_directory_is_never_descended() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real");
+        std::fs::create_dir(&target).unwrap();
+        touch(&target, "inside.lnk");
+        let junction = dir.path().join("link");
+        // Junctions need no elevation on Windows; skip (never fail) if the box refuses one.
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !created {
+            eprintln!("skipping: mklink /J unavailable on this box");
+            return;
+        }
+        assert!(has_reparse_point(&junction));
+        let items = walk(dir.path(), ItemSurface::StartMenu, true);
+        // The real directory still yields its file; the JUNCTION path never does.
+        assert!(items.iter().any(|i| i.name == "inside"));
+        assert!(
+            !items.iter().any(|i| Path::new(&i.path).starts_with(&junction)),
+            "a junction's foreign contents must never become style targets"
+        );
+    }
+
+    // ---- Task 11: AppsFolder (Store/MSIX) synthesis + args classification ----
+
+    use crate::shell::appsfolder::AppsfolderEntry;
+
+    fn entry(display_name: &str, aumid: &str) -> AppsfolderEntry {
+        AppsfolderEntry { display_name: display_name.into(), aumid: aumid.into() }
+    }
+
+    #[test]
+    fn synthesize_appx_items_covers_only_entries_without_a_walked_item() {
+        let dir = tempfile::tempdir().unwrap();
+        // The walked-name set is LOWERCASED names across every surface: an entry whose name any
+        // real item already carries is addressed by that item — never a duplicate.
+        let walked: std::collections::HashSet<String> =
+            ["brave", "whatsapp"].into_iter().map(String::from).collect();
+        let entries = vec![
+            entry("Brave", "Brave"),
+            entry("whatsapp", "X!App"),
+            entry("Trello", "45273LiamForsyth.PawsforTrello_7pb5ddty8z1pa!trello"),
+            entry("Reloj", "Microsoft.WindowsAlarms_8wekyb3d8bbwe!App"),
+        ];
+        let items = synthesize_appx_items(&walked, &entries, dir.path());
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Trello", "Reloj"], "walked names (any case) are never synthesized");
+
+        let trello = &items[0];
+        assert_eq!(trello.kind, ItemKind::AppxShortcut);
+        assert_eq!(trello.surface, ItemSurface::StartMenu);
+        assert!(trello.parent.is_empty(), "wrappers live at the Programs root");
+        assert_eq!(trello.icon, None, "the icon is extracted live from the package glyph");
+        let expected_path =
+            dir.path().join("Trello.lnk").to_string_lossy().into_owned();
+        assert_eq!(trello.path, expected_path, "path is the PROSPECTIVE wrapper location");
+        assert_eq!(
+            trello.id,
+            ItemId::from_source_path("filesystem", &expected_path),
+            "the id anchors on the path apply will write to"
+        );
+        assert!(trello.can_style());
+    }
+
+    #[test]
+    fn synthesize_appx_items_dedupes_display_names_and_rejects_unsafe_stems() {
+        let dir = tempfile::tempdir().unwrap();
+        let walked = std::collections::HashSet::new();
+        let entries = vec![
+            entry("Dup", "A!App"),
+            entry("dup", "B!App"), // duplicate display name → first wins
+            entry("Bad:Name", "C!App"), // illegal filename char → skipped
+            entry("Trailing.", "D!App"), // trailing dot normalizes → skipped
+            entry("With Space", "E!App"), // legal → kept
+        ];
+        let items = synthesize_appx_items(&walked, &entries, dir.path());
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Dup", "With Space"]);
+    }
+
+    #[test]
+    fn a_garbage_fixture_lnk_stays_an_ordinary_shortcut_after_the_args_read() {
+        // The args-driven AppxShortcut reclassification must be best-effort: a `.lnk` that cannot
+        // be COM-loaded (every byte fixture here) is an ordinary Shortcut, never a scan error.
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "Broken.lnk");
+        let items = walk(dir.path(), ItemSurface::Taskbar, false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ItemKind::Shortcut);
+    }
+
+    /// On-box (COM): a REAL appx wrapper (the box-verified launcher recipe — args
+    /// `--activate-aumid <AUMID>`) walks as an AppxShortcut with a clean display name — the
+    /// classification the whole Task 11 pipeline keys on, and the guard against a present
+    /// wrapper re-reading as an ordinary shortcut (which would compound re-styles).
+    #[test]
+    fn a_real_appsfolder_wrapper_lnk_walks_as_an_appx_shortcut() {
+        // The icon lives OUTSIDE the walked root — it is an asset, not a scanned item.
+        let assets = tempfile::tempdir().unwrap();
+        let icon = assets.path().join("i.ico");
+        std::fs::write(&icon, b"icon").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let lnk = dir.path().join("WhatsApp.lnk").to_string_lossy().into_owned();
+        let icon = icon.to_string_lossy().into_owned();
+        let exec = crate::com::StaExecutor::spawn().unwrap();
+        exec.run(move || shell_link::create_appx_shortcut(&lnk, "Fake.App_abc!App", &icon))
+            .unwrap()
+            .unwrap();
+        let items = walk(dir.path(), ItemSurface::StartMenu, false);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].kind,
+            ItemKind::AppxShortcut,
+            "our wrapper arguments (--activate-aumid) must reclassify the .lnk"
+        );
+        assert_eq!(items[0].name, "WhatsApp", "the label drops .lnk like any shortcut");
+    }
 }

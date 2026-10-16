@@ -123,6 +123,12 @@ pub enum RestoreAnchor {
     RecycleBin(RecycleBinAnchor),
     /// System desktop CLSID (This PC / Network / …) per-user `DefaultIcon` registry state.
     SystemIcon(SystemIconAnchor),
+    /// The original did not exist on disk at all: a virtual AppsFolder (Store/MSIX) entry whose
+    /// style target is a wrapper `.lnk` this app CREATES at apply time (Task 11, ADR-0024).
+    /// Restore removes that wrapper — the desktop returns to "entry not materialized" (the Start
+    /// menu then shows the app once, from the AppsFolder itself). Carries material: the restore
+    /// action is fully determined (delete `<prospective path>`), it just needs no captured bytes.
+    FileAbsent,
     /// Capture failed — recorded so the presence of restore material can be verified before
     /// an apply proceeds (oracle: `restore.captureError`).
     CaptureFailed { reason: String },
@@ -242,12 +248,25 @@ mod tests {
     }
 
     #[test]
+    fn file_absent_anchor_round_trips_and_has_material() {
+        // Task 11: the virtual AppsFolder entry's original state is "no wrapper existed". The
+        // internally-tagged serde form must stay stable across restarts (ledger replay).
+        let anchor = RestoreAnchor::FileAbsent;
+        assert!(anchor.has_material(), "an absent original still determines a restore action");
+        let json = serde_json::to_string(&anchor).unwrap();
+        assert_eq!(json, r#"{"anchor":"FileAbsent"}"#);
+        let back: RestoreAnchor = serde_json::from_str(&json).unwrap();
+        assert_eq!(anchor, back);
+    }
+
+    #[test]
     fn has_material_is_true_for_every_real_variant() {
         let variants = [
             RestoreAnchor::FileBytes { bytes: b"x".to_vec() },
             RestoreAnchor::Folder { attributes: 0, desktop_ini: None },
             RestoreAnchor::RegularFile(WrapperAnchor { file_attributes: 0, prior_wrapper: PriorWrapper::Absent }),
             RestoreAnchor::RecycleBin(RecycleBinAnchor { key_existed: false, default: None, empty: None, full: None }),
+            RestoreAnchor::FileAbsent,
         ];
         for v in variants {
             assert!(v.has_material(), "{v:?} should carry restore material");

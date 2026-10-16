@@ -38,11 +38,11 @@ impl IconApplier for WindowsIconApplier {
         let icon = assets.primary.path.clone();
         match target.kind {
             // COM writes run on the STA thread (outer `?` = thread-join error, inner `?` = the
-            // write's own error). A UWP shortcut's desktop entry is an ordinary `.lnk`, so it styles
-            // through the exact same mechanism as a Shortcut (spec 06 §6, P1-12).
-            ItemKind::Shortcut | ItemKind::AppxShortcut => {
-                self.exec.run(move || shortcut::apply(&path, &icon))??
-            }
+            // write's own error).
+            ItemKind::Shortcut => self.exec.run(move || shortcut::apply(&path, &icon))??,
+            // A Store/MSIX wrapper (Task 11): present → the AUMID-preserving IconLocation rewrite;
+            // absent → CREATE the wrapper at the prospective path (AppsFolder lookup by stem).
+            ItemKind::AppxShortcut => self.exec.run(move || shortcut::apply_appx(&path, &icon))??,
             ItemKind::RegularFile => self.exec.run(move || file_wrapper::apply(&path, &icon))??,
             // Filesystem / registry writes need no COM.
             ItemKind::UrlShortcut => url_shortcut::apply(&path, &icon, 0)?,
@@ -79,6 +79,11 @@ impl IconApplier for WindowsIconApplier {
         match anchor {
             // `.lnk`/`.url` restore is a byte replay (oracle `RestoreOriginalContent`) — no COM.
             RestoreAnchor::FileBytes { bytes } => shortcut::restore_bytes(&target.path, bytes),
+            // A virtual AppsFolder entry's original state was "no wrapper exists" (Task 11): the
+            // restore removes the wrapper apply created — the file_wrapper Absent→remove_file
+            // posture. The driver's CAS (live == last_applied) gates this, so the file removed is
+            // the verified styled wrapper, never a user's own shortcut.
+            RestoreAnchor::FileAbsent => shortcut::remove(&target.path),
             RestoreAnchor::Folder { attributes, desktop_ini } => {
                 folder::restore(&target.path, *attributes, desktop_ini.as_ref())
             }

@@ -155,9 +155,9 @@ fn bake_and_apply(
         if !item.can_style() {
             continue;
         }
-        let cfg = match recipe.effective_config(item.kind, item.kind.is_shortcut())? {
+        let cfg = match recipe.effective_config(item.kind, item.kind.is_shortcut(), item.surface)? {
             Some(c) => c,
-            None => continue, // kind-policy opt-out → keep original
+            None => continue, // kind-policy / surface opt-out → keep original
         };
         // CAS anchor = the fingerprint read NOW; the driver skips an item hand-edited since.
         let fingerprint = match ports.reader.read_fingerprint(&item.target()) {
@@ -308,8 +308,8 @@ mod tests {
     use super::*;
     use dm_contracts::IconStyle;
     use dm_domain::{
-        ApplyAssets, AssetRef, DecodedImage, Fingerprint, ItemId, ItemKind, ItemState, ItemTarget,
-        PortError, PortResult, RestoreAnchor,
+        ApplyAssets, AssetRef, DecodedImage, Fingerprint, ItemId, ItemKind, ItemState, ItemSurface,
+        ItemTarget, PortError, PortResult, RestoreAnchor,
     };
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -406,6 +406,8 @@ mod tests {
             name: id.into(),
             path: format!("C:/Users/Dev/Desktop/{id}.lnk"),
             kind: ItemKind::Shortcut,
+            surface: ItemSurface::Desktop,
+            parent: String::new(),
             icon: None,
             state: ItemState::Ready,
             requires_explicit_consent: false,
@@ -503,6 +505,8 @@ mod tests {
             name: "pub".into(),
             path: "C:/Users/Public/Desktop/Tool.lnk".into(),
             kind: ItemKind::Shortcut,
+            surface: ItemSurface::Desktop,
+            parent: String::new(),
             icon: None,
             state: ItemState::Ready,
             requires_explicit_consent: false,
