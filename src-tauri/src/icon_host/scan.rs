@@ -183,13 +183,8 @@ impl IconHost {
                         // being cloned (codex R2 B-12) — `extract` already handed us owned `DecodedImage`s
                         // and the Vec is dropped right after, so a large desktop pays one fewer full copy
                         // per source. Each unique source's bytes count against the per-scan budget.
-                        for (slot, src) in sources.into_iter().enumerate() {
-                            let (url, added) = cache_source_into(
-                                &mut next_sources,
-                                item.id.as_str(),
-                                slot as u32,
-                                src,
-                            );
+                        for src in sources {
+                            let (url, added) = cache_source_into(&mut next_sources, src);
                             source_bytes += added;
                             urls.push(url);
                         }

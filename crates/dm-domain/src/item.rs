@@ -63,6 +63,14 @@ pub enum ItemKind {
     /// `autorun.inf`). Part of the `explorer` surface, routed by `kind`: the write mechanism
     /// differs from folders even though both are Explorer items.
     Drive,
+    /// A file TYPE (extension → ProgId association) styled via the ProgId's per-user `DefaultIcon`
+    /// value under `Software\Classes\<ProgId>\DefaultIcon` (ADR-0004 D7 amendment 2026-10-16 —
+    /// the association ban lifted for every type EXCEPT images). One item PER PROGID (extensions
+    /// sharing a ProgId share one registry value, so they must be one item): `path` carries the
+    /// ProgId itself — the registry key apply writes — and never a filesystem path. Images and
+    /// per-file types (`%1`) are filtered out at scan, so this kind never collapses a thumbnail
+    /// or an executable's individual icon.
+    FileType,
     /// A loose file — styled by a companion wrapper `.lnk` with the original hidden.
     RegularFile,
     /// A system virtual item (This PC / Network / User Files / Control Panel) styled via the
@@ -225,6 +233,7 @@ mod tests {
             ItemKind::UrlShortcut,
             ItemKind::Folder,
             ItemKind::Drive,
+            ItemKind::FileType,
             ItemKind::RegularFile,
             ItemKind::RecycleBin,
             ItemKind::AppxShortcut,
@@ -297,6 +306,7 @@ mod tests {
             ItemKind::UrlShortcut,
             ItemKind::Folder,
             ItemKind::Drive,
+            ItemKind::FileType,
             ItemKind::RegularFile,
             ItemKind::RecycleBin,
             ItemKind::AppxShortcut,
@@ -334,7 +344,14 @@ mod tests {
         for kind in [ItemKind::Shortcut, ItemKind::UrlShortcut, ItemKind::AppxShortcut] {
             assert!(kind.is_shortcut(), "{kind:?} carries the shortcut mark");
         }
-        for kind in [ItemKind::Folder, ItemKind::Drive, ItemKind::RegularFile, ItemKind::RecycleBin, ItemKind::System] {
+        for kind in [
+            ItemKind::Folder,
+            ItemKind::Drive,
+            ItemKind::FileType,
+            ItemKind::RegularFile,
+            ItemKind::RecycleBin,
+            ItemKind::System,
+        ] {
             assert!(!kind.is_shortcut(), "{kind:?} is not a shortcut");
         }
     }

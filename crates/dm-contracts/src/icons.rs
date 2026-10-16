@@ -46,14 +46,19 @@ pub enum IconKindDto {
     /// A fixed drive (ADR-0004 D7) — the `explorer` surface's drive half, styled via its per-user
     /// registry `DefaultIcon` (routed by `kind`, distinct from the folder `desktop.ini` writer).
     Drive,
+    /// A file TYPE (extension association) styled via its ProgId's per-user `DefaultIcon` — the
+    /// `explorer` surface's file half (ADR-0004 D7 amendment 2026-10-16, every type except
+    /// images). One item per ProgId; `path` carries the ProgId.
+    FileType,
     RegularFile,
     ExecutableFile,
     Unsupported,
 }
 
 /// WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
-/// taskbar pin (`…\User Pinned\TaskBar\*.lnk`), a Start menu shortcut, or File Explorer (the
-/// profile's folders + fixed drives, ADR-0004 D7). Serialized camelCase to match the TS union
+/// taskbar pin (`…\User Pinned\TaskBar\*.lnk`), a Start menu shortcut, or File Explorer (every
+/// fixed drive's folders + the drives themselves + the file types seen there, ADR-0004 D7 and its
+/// 2026-10-16 amendment). Serialized camelCase to match the TS union
 /// `'desktop' | 'taskbar' | 'startMenu' | 'explorer'`. `#[serde(default)]` reads an absent field
 /// as `Desktop`, so a downgraded/older host degrades to the classic surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -228,6 +233,7 @@ mod tests {
             (IconKindDto::SystemIcon, "\"SystemIcon\""),
             (IconKindDto::Folder, "\"Folder\""),
             (IconKindDto::Drive, "\"Drive\""),
+            (IconKindDto::FileType, "\"FileType\""),
             (IconKindDto::RegularFile, "\"RegularFile\""),
             (IconKindDto::ExecutableFile, "\"ExecutableFile\""),
             (IconKindDto::Unsupported, "\"Unsupported\""),

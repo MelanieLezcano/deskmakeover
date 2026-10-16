@@ -17,7 +17,7 @@ use dm_domain::{
     PriorWrapper, RestoreAnchor, WrapperAnchor,
 };
 
-use crate::apply::{drive, file_wrapper, recyclebin, system};
+use crate::apply::{drive, file_wrapper, filetype, recyclebin, system};
 use crate::classify::parse_icon_location;
 use crate::com::StaExecutor;
 use crate::durable::{read_capped, SHORTCUT_READ_CAP};
@@ -146,6 +146,15 @@ impl ItemStateReader for WindowsStateReader {
                 let icon = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
                 Ok(SurfaceState::Drive { icon }.fingerprint())
             }
+            // A file TYPE: the effective per-ProgId `DefaultIcon` location (our per-user override
+            // else the HKCR machine default — exactly what the shell shows for every file of the
+            // type). One icon location, so it fingerprints as an `IconRef` exactly like a System
+            // item's — same `expected_after_apply` surface (P1-12 discipline).
+            ItemKind::FileType => {
+                let a = filetype::read_current(&filetype::prog_id_from_path(&target.path)?)?;
+                let (path, index) = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
+                Ok(SurfaceState::IconRef { path, index }.fingerprint())
+            }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("fingerprint for {:?}", target.kind)))
             }
@@ -248,6 +257,15 @@ impl ItemStateReader for WindowsStateReader {
                 let location = icon.clone();
                 Ok((SurfaceState::Drive { icon }.fingerprint(), vec![location]))
             }
+            // A file TYPE: the effective `DefaultIcon` is the live location, so a ProgId key
+            // already pointing into OUR asset store is visible to the provenance guard like any
+            // other kind (never re-read as "the original" after a ledger-row loss).
+            ItemKind::FileType => {
+                let a = filetype::read_current(&filetype::prog_id_from_path(&target.path)?)?;
+                let (path, index) = a.value.as_ref().map(|v| parse_icon_location(&v.raw)).unwrap_or_default();
+                let fingerprint = SurfaceState::IconRef { path: path.clone(), index }.fingerprint();
+                Ok((fingerprint, vec![(path, index)]))
+            }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("fingerprint for {:?}", target.kind)))
             }
@@ -277,6 +295,11 @@ impl ItemStateReader for WindowsStateReader {
             }
             ItemKind::Drive => {
                 Ok(RestoreAnchor::Drive(drive::read_current(&drive::letter_from_path(&target.path)?)?))
+            }
+            ItemKind::FileType => {
+                Ok(RestoreAnchor::FileType(filetype::read_current(
+                    &filetype::prog_id_from_path(&target.path)?,
+                )?))
             }
             ItemKind::Unsupported => {
                 Err(PortError::Unsupported(format!("anchor for {:?}", target.kind)))

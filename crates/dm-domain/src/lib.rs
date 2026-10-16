@@ -34,8 +34,8 @@ pub use ports::{
     MonitorTopology, OverlayControl, OverlayOutcome, OverlayStyle, WallpaperApplier,
 };
 pub use restore::{
-    DesktopIniAnchor, DriveAnchor, PriorWrapper, RecycleBinAnchor, RegistryValue, RestoreAnchor,
-    SystemIconAnchor, WrapperAnchor,
+    DesktopIniAnchor, DriveAnchor, FileTypeAnchor, PriorWrapper, RecycleBinAnchor, RegistryValue,
+    RestoreAnchor, SystemIconAnchor, WrapperAnchor,
 };
 pub use wallpaper::{
     DecodedImage, MonitorInfo, MonitorRect, MonitorWallpaper, Orientation, WallpaperPosition,

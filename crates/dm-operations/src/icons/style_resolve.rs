@@ -46,6 +46,11 @@ pub fn bucket_of(kind: ItemKind) -> Option<KindBucket> {
         // A fixed drive styles and is governed exactly like a folder: it is an Explorer container
         // the user browses, and it rides the same `explorer` surface toggle/consent (ADR-0004 D7).
         ItemKind::Drive => Some(KindBucket::Folder),
+        // A file TYPE is a DOCUMENT's icon (a ProgId association), so it rides the File bucket —
+        // the bucket the user can flip OFF to disable every association icon while keeping
+        // folders/drives styled (ADR-0004 D7 amendment 2026-10-16: the second, independent kill
+        // switch for the feature that lifted the ban). Same `explorer` surface as its siblings.
+        ItemKind::FileType => Some(KindBucket::File),
         ItemKind::RegularFile => Some(KindBucket::File),
         ItemKind::Unsupported => None,
     }
@@ -456,7 +461,8 @@ mod tests {
     fn bucket_of_covers_every_kind() {
         // Every kind buckets except Unsupported (ungoverned). A fixed drive rides the Folder
         // bucket — it is an Explorer container the user browses, so it shares the Folder policy
-        // switch and the explorer surface consent (ADR-0004 D7).
+        // switch and the explorer surface consent (ADR-0004 D7); a file TYPE rides File (the
+        // association icons the amendment enabled are document icons, second kill switch).
         for (kind, bucket) in [
             (ItemKind::Shortcut, Some(KindBucket::App)),
             (ItemKind::UrlShortcut, Some(KindBucket::App)),
@@ -466,6 +472,7 @@ mod tests {
             (ItemKind::Folder, Some(KindBucket::Folder)),
             (ItemKind::Drive, Some(KindBucket::Folder)),
             (ItemKind::RegularFile, Some(KindBucket::File)),
+            (ItemKind::FileType, Some(KindBucket::File)),
             (ItemKind::Unsupported, None),
         ] {
             assert_eq!(bucket_of(kind), bucket, "{kind:?} bucket");

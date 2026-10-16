@@ -40,6 +40,11 @@ export function kindBucket(kind: IconKind): IconKindBucket | null {
     case 'Drive':
       return 'Folder'
     case 'RegularFile':
+    // A file TYPE is a DOCUMENT's icon (an extension association, ADR-0004 D7
+    // amendment 2026-10-16) — it rides the File bucket, so flipping File OFF
+    // disables every association icon while folders/drives stay styled. Same
+    // explorer surface/consent as its siblings.
+    case 'FileType':
       return 'File'
     default:
       return null
