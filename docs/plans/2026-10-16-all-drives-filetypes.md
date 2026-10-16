@@ -191,4 +191,20 @@ images left the styleable set entirely), peak RSS **~205 MB** (vs ~3 GB before t
 images visible with no companion wrappers, folders rendering without the plate card, and the
 persisted recipe carrying `Folder: { shape: "None" }`.
 
+### Fourth defect (owner-visible): the shell restart accepted a taskbar-less Explorer
+
+After that apply the owner reported **no taskbar and a black desktop**. Diagnosis: `explorer.exe`
+was alive but had created neither `Shell_TrayWnd` nor the desktop layer, and `restart_shell`'s
+success criterion was the **process** only (`explorer_running`) — an Explorer that came up without
+initialising its shell passed the check, so the app reported success over a desktop with no shell.
+The wallpaper itself was untouched (the registry + transcoded file were the owner's own, days old):
+the black screen was the missing desktop layer.
+
+Fixed in `crates/dm-windows/src/refresh.rs`: the restart now requires **both** the process and the
+`Shell_TrayWnd` window (`shell_ready` — pure predicate, unit-tested), clears a shell-less Explorer
+before relaunching instead of spawning on top of it, and its error names the taskbar explicitly.
+On-box repair for the already-broken state: restart Explorer (kill + launch) → taskbar and desktop
+layer back, wallpaper intact.
+
+
 
