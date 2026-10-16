@@ -110,6 +110,7 @@ export function ConsentSheet({
   count,
   taskbarCount = 0,
   startMenuCount = 0,
+  explorerCount = 0,
   multiUser = false,
   onAgree,
   onCancel,
@@ -117,9 +118,13 @@ export function ConsentSheet({
   open: boolean
   count: number
   /** ADR-0024: styleable items on the ENABLED extra surfaces (the caller gates
-   *  them by the surface legs). Both zero keeps the classic desktop-only copy. */
+   *  them by the surface legs). All zero keeps the classic desktop-only copy. */
   taskbarCount?: number
   startMenuCount?: number
+  /** ADR-0004 D7: styleable explorer folders (+ drives) on the enabled `explorer`
+   *  leg. A separate honest row — the scope (folders under the profile + drives)
+   *  reads differently from the shortcut surfaces. */
+  explorerCount?: number
   multiUser?: boolean
   onAgree: () => void
   onCancel: () => void
@@ -138,6 +143,11 @@ export function ConsentSheet({
               .replace('{1}', String(startMenuCount)),
           },
         ]
+      : []),
+    // ADR-0004 D7: the explorer leg styles FOLDERS (+ drives) via desktop.ini /
+    // the registry — a different mechanism worth its own honest sentence.
+    ...(explorerCount > 0
+      ? [{ glyph: '🗂', text: t('ConsentAlsoExplorer').replace('{0}', String(explorerCount)) }]
       : []),
     { glyph: '🛡', text: t('ConsentNot') },
     // Informed consent (owner 2026-07-17): applying restarts the shell so the desktop re-resolves

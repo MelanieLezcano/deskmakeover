@@ -120,3 +120,26 @@
 - New failure surface is bounded: pin/start entries are ordinary `.lnk`s in
   ordinary-privilege (user) or already-existing-privileged (ProgramData) scopes; a
   locked pin fails its own per-item txn, never the batch (existing contract, G12).
+
+## Amendment (2026-10-16 — owner ask "quiero que TODOS los iconos de la taskbar se estilicen")
+
+Re-examined against the ask, in this order:
+
+1. **What is stylable IS stylable**: every taskbar pin is a `.lnk` under
+   `User Pinned\TaskBar` → `ItemKind::Shortcut` on the `taskbar` surface (this ADR's decision 1),
+   plus Store pins via the Task 11 wrapper. There is no third category of pin: Windows builds the
+   pinned row exclusively from that folder.
+2. **Running-window buttons**: context 4 / decision 5 stand as written — no supported lever
+   exists for exe resources (Authenticode + reversibility), and rewriting `.exe` icons stays on
+   the Never-list. **On-box observation (2026-10-13, plan §9)**: for a *pinned* app the button
+   renders the PIN's icon once the shell repaints, so a running pinned app DOES show the styled
+   icon; only *unpinned* running apps (and system-tray glyphs, which each app draws itself from
+   its own resources) keep the native icon. The honest coverage is therefore "every pin + every
+   pinned-then-running button", never an unpinned running exe's own resource.
+3. **Not a bug when it looks native**: the desktop/restart path is `restart_shell()` +
+   `purge_icon_caches()` (decision 4) — a shell whose cache predates an apply shows the old
+   glyphs until that refresh; pin-cache staleness across restarts was reproduced and fixed by the
+   same repaint on-box.
+
+No decision text changes; this records that the ask was checked item-by-item and that the exe
+limit is a **platform floor**, not remaining scope.

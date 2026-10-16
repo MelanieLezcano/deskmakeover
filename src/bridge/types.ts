@@ -192,7 +192,18 @@ export interface GridDto {
  *  immutable thing is the PACKAGE asset, not the shortcut). The C# enum +
  *  writers + CanStyle updates land in the Windows batch. */
 export type IconKind =
-  | 'Shortcut' | 'UrlShortcut' | 'AppxShortcut' | 'RecycleBin' | 'SystemIcon' | 'Folder' | 'RegularFile'
+  | 'Shortcut' | 'UrlShortcut' | 'AppxShortcut' | 'RecycleBin' | 'SystemIcon' | 'Folder'
+  /** A fixed drive (ADR-0004 D7) — the explorer surface's drive half, styled
+   *  via its per-user registry DefaultIcon (routed by kind, distinct from the
+   *  folder desktop.ini writer). Buckets with Folder (same explorer consent). */
+  | 'Drive'
+  /** A file TYPE (extension association → ProgId) styled via the ProgId's
+   *  per-user registry DefaultIcon — the explorer surface's file half
+   *  (ADR-0004 D7 amendment 2026-10-16: every type EXCEPT images, and never
+   *  per-file `%1` types). One item per ProgId; `path` carries the ProgId.
+   *  Buckets with File (the second, independent kill switch). */
+  | 'FileType'
+  | 'RegularFile'
   /** Bare launcher on the desktop (绿色软件 .exe) — a PROGRAM in the user's
    *  mind, so it buckets with App, never with documents (ADR-0017 D1; host
    *  classifies by extension in the Windows batch, v1 scope `.exe` only). */
@@ -225,6 +236,9 @@ export type KindPolicy = Record<IconKindBucket, boolean>
 export interface Surfaces {
   taskbar: boolean
   startMenu: boolean
+  /** File Explorer (ADR-0004 D7): the profile's folders (`desktop.ini`) + fixed drives
+   *  (registry `DriveIcons`). Same default-true rule as the others. */
+  explorer: boolean
 }
 
 /** The per-type style envelope (ADR-0017 D3): ONLY these axes may differ by
@@ -266,7 +280,7 @@ export type TypeOverrides = Partial<Record<IconKindBucket, TypeOverrideEntry>>
 /** WHICH shell surface an item was observed on (ADR-0024, fork draft): the desktop grid, a
  *  taskbar pin (`…\User Pinned\TaskBar\*.lnk`), or a Start menu shortcut. Mirrors the generated
  *  `SurfaceDto` union; the hand mirror keeps the frontend-owned `IconItemDto` self-contained. */
-export type Surface = 'desktop' | 'taskbar' | 'startMenu'
+export type Surface = 'desktop' | 'taskbar' | 'startMenu' | 'explorer'
 
 /** One desktop item (icons contract v2, spec 06 §2): the web renders styling
  *  locally from `sourceUrls` (256px, [0] primary; RecycleBin ships TWO —

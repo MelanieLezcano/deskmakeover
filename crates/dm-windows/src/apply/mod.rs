@@ -7,7 +7,9 @@ mod reg_icon;
 mod shortcut;
 mod url_shortcut;
 
+pub(crate) mod drive;
 pub(crate) mod file_wrapper;
+pub(crate) mod filetype;
 pub(crate) mod recyclebin;
 pub(crate) mod system;
 
@@ -60,6 +62,13 @@ impl IconApplier for WindowsIconApplier {
             // of the Recycle Bin. The CLSID rides the item's parsing path (`::{GUID}`).
             // [WINDOWS-VERIFY] runtime.
             ItemKind::System => system::apply(&system::parse_clsid(&target.path)?, &icon)?,
+            // A fixed drive styles via its per-user `DefaultIcon` registry value (ADR-0004 D7) —
+            // the letter rides the item's own path (`C:\` → `C`). Registry write, no COM.
+            ItemKind::Drive => drive::apply(&drive::letter_from_path(&target.path)?, &icon)?,
+            // A file TYPE styles via its ProgId's per-user `DefaultIcon` (ADR-0004 D7 amendment
+            // 2026-10-16) — the ProgId rides the item's own path and is validated as one key
+            // component first. Exactly ONE value is written, never a verb. Registry write, no COM.
+            ItemKind::FileType => filetype::apply(&filetype::prog_id_from_path(&target.path)?, &icon)?,
             // Only genuinely un-styleable (broken/unreadable) items remain.
             ItemKind::Unsupported => {
                 return Err(PortError::Unsupported(format!("apply for {:?}", target.kind)))
@@ -107,6 +116,37 @@ impl IconApplier for WindowsIconApplier {
                     )));
                 }
                 system::restore(state)
+            }
+            RestoreAnchor::Drive(anchor) => {
+                // Defence-in-depth (same discipline as the System CLSID check): the anchor's
+                // letter is interpolated into an HKCU per-drive key path, so it must match the
+                // drive the target path names — otherwise a mismatched pairing would mutate the
+                // WRONG drive's key and report success while the real target stays styled.
+                let target_letter = drive::letter_from_path(&target.path)?;
+                if !target_letter.eq_ignore_ascii_case(&anchor.letter) {
+                    return Err(PortError::Unsupported(format!(
+                        "Drive restore letter mismatch: target {target_letter} vs anchor {}",
+                        anchor.letter
+                    )));
+                }
+                drive::restore(anchor)
+            }
+            RestoreAnchor::FileType(anchor) => {
+                // Defence-in-depth (same discipline as the System CLSID / Drive letter checks):
+                // the anchor's ProgId is interpolated into an HKCU `Software\Classes` key path,
+                // so it must be BOTH a valid single key component AND the association the target
+                // actually names — otherwise a mismatched pairing (a txtfile target carrying an
+                // htmlfile anchor) or a poisoned anchor would mutate the WRONG association and
+                // report success while the real target stays styled. `filetype::restore`
+                // re-validates the shape; this compares identity.
+                let target_prog = filetype::prog_id_from_path(&target.path)?;
+                if target_prog != anchor.prog_id {
+                    return Err(PortError::Unsupported(format!(
+                        "FileType restore ProgId mismatch: target {target_prog} vs anchor {}",
+                        anchor.prog_id
+                    )));
+                }
+                filetype::restore(anchor)
             }
             RestoreAnchor::CaptureFailed { reason } => {
                 Err(PortError::Unsupported(format!("no restore material: {reason}")))

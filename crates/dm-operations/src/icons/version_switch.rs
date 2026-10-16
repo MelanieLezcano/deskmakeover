@@ -255,12 +255,22 @@ fn bake_and_apply(
     };
     let by_id: std::collections::HashMap<&str, &dm_domain::Fingerprint> =
         anchors.iter().map(|(i, f)| (i.id.as_str(), f)).collect();
-    let mut requests = Vec::with_capacity(packaged.len());
+    // Per-item transactions, mirroring `commit_apply` (owner 2026-07-17): one item hitting a
+    // transient fault (an Explorer/AV hold on the live Desktop) must not roll the whole SWITCH
+    // back — that batch-abort is exactly what the owner saw as "the first switch didn't replace
+    // the folder". A bare driver Err (possibly torn journal) stops the loop; later items were
+    // never journaled and stay untouched.
+    //
+    // Each request is built INSIDE its iteration (owner OOM fix 2026-10-16): a switch re-applies a
+    // whole look, so an up-front `Vec<ApplyRequest>` would clone every item's ICO bytes at once —
+    // the ~3 GB blowup the all-drives apply hit. Built here, the bytes live for one transaction.
+    let driver = TxnDriver::new(ports.reader, ports.applier, ports.assets);
+    let mut folded = ApplyOutcome::default();
     for pkg in &packaged {
         let Some((item, _)) = anchors.iter().find(|(i, _)| i.id.as_str() == pkg.item_id) else {
             continue;
         };
-        requests.push(ApplyRequest {
+        let req = ApplyRequest {
             target: item.target(),
             expected_fingerprint: (*by_id[pkg.item_id.as_str()]).clone(),
             owned: OwnedFields::icon_only(),
@@ -268,16 +278,7 @@ fn bake_and_apply(
             asset_bytes: pkg.primary.bytes.clone(),
             empty_asset_bytes: pkg.empty.as_ref().map(|e| e.bytes.clone()),
             pinned_seed: None,
-        });
-    }
-    // Per-item transactions, mirroring `commit_apply` (owner 2026-07-17): one item hitting a
-    // transient fault (an Explorer/AV hold on the live Desktop) must not roll the whole SWITCH
-    // back — that batch-abort is exactly what the owner saw as "the first switch didn't replace
-    // the folder". A bare driver Err (possibly torn journal) stops the loop; later items were
-    // never journaled and stay untouched.
-    let driver = TxnDriver::new(ports.reader, ports.applier, ports.assets);
-    let mut folded = ApplyOutcome::default();
-    for req in requests {
+        };
         match driver.apply(txn.next_id(), vec![req], journal, ledger) {
             Ok(one) => {
                 folded.committed.extend(one.committed);

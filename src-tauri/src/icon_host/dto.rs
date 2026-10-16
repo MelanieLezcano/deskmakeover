@@ -35,6 +35,8 @@ pub(super) fn map_kind(k: ItemKind) -> IconKindDto {
         ItemKind::AppxShortcut => IconKindDto::AppxShortcut,
         ItemKind::RecycleBin => IconKindDto::RecycleBin,
         ItemKind::Folder => IconKindDto::Folder,
+        ItemKind::Drive => IconKindDto::Drive,
+        ItemKind::FileType => IconKindDto::FileType,
         ItemKind::RegularFile => IconKindDto::RegularFile,
         ItemKind::System => IconKindDto::SystemIcon,
         ItemKind::Unsupported => IconKindDto::Unsupported,
@@ -49,6 +51,7 @@ pub(super) fn map_surface(surface: ItemSurface) -> SurfaceDto {
         ItemSurface::Desktop => SurfaceDto::Desktop,
         ItemSurface::Taskbar => SurfaceDto::Taskbar,
         ItemSurface::StartMenu => SurfaceDto::StartMenu,
+        ItemSurface::Explorer => SurfaceDto::Explorer,
     }
 }
 

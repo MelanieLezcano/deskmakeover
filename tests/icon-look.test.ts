@@ -67,13 +67,13 @@ describe('serialize/parse round-trip', () => {
   })
 
   test('surfaces (ADR-0024) round-trips; an absent leg reads as the default (participate)', () => {
-    const withSurfaces = { ...recipe, surfaces: { taskbar: true, startMenu: false } }
+    const withSurfaces = { ...recipe, surfaces: { taskbar: true, startMenu: false, explorer: true } }
     const back = parseIconLook(serializeIconLook(withSurfaces))
-    expect(back!.surfaces).toEqual({ taskbar: true, startMenu: false })
+    expect(back!.surfaces).toEqual({ taskbar: true, startMenu: false, explorer: true })
     // Legacy recipes (pre-ADR-0024) carry NO surfaces → they read as the DEFAULT: every
     // surface participates (owner decision 2026-10-12, amending the original opt-out).
     const legacy = JSON.stringify({ config, kindPolicy: recipe.kindPolicy, typeOverrides: {} })
-    expect(parseIconLook(legacy)!.surfaces).toEqual({ taskbar: true, startMenu: true })
+    expect(parseIconLook(legacy)!.surfaces).toEqual({ taskbar: true, startMenu: true, explorer: true })
   })
 })
 
@@ -128,10 +128,10 @@ describe('normalizeIconLook (the import validator)', () => {
     // Absent → absent (presence-preserving, like kindPolicy): a style-only preset stays clean.
     expect(normalizeIconLook({ config })!.surfaces).toBeUndefined()
     // A partial leg fills the missing surface with the DEFAULT (participate — 2026-10-12).
-    expect(normalizeIconLook({ config, surfaces: { taskbar: false } })!.surfaces).toEqual({ taskbar: false, startMenu: true } as never)
+    expect(normalizeIconLook({ config, surfaces: { taskbar: false } })!.surfaces).toEqual({ taskbar: false, startMenu: true, explorer: true } as never)
     // G11 closed whitelist: a KNOWN leg with a non-boolean REJECTS; unknown legs drop.
     expect(normalizeIconLook({ config, surfaces: { taskbar: 'yes' } })).toBeNull()
-    expect(normalizeIconLook({ config, surfaces: { taskbar: false, futureSurface: true } })!.surfaces).toEqual({ taskbar: false, startMenu: true } as never)
+    expect(normalizeIconLook({ config, surfaces: { taskbar: false, futureSurface: true } })!.surfaces).toEqual({ taskbar: false, startMenu: true, explorer: true } as never)
   })
 })
 

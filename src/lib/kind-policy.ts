@@ -35,8 +35,16 @@ export function kindBucket(kind: IconKind): IconKindBucket | null {
     case 'SystemIcon':
       return 'App'
     case 'Folder':
+    // A fixed drive is an Explorer container the user browses — it rides the
+    // Folder bucket: same policy switch, same explorer consent (ADR-0004 D7).
+    case 'Drive':
       return 'Folder'
     case 'RegularFile':
+    // A file TYPE is a DOCUMENT's icon (an extension association, ADR-0004 D7
+    // amendment 2026-10-16) — it rides the File bucket, so flipping File OFF
+    // disables every association icon while folders/drives stay styled. Same
+    // explorer surface/consent as its siblings.
+    case 'FileType':
       return 'File'
     default:
       return null
@@ -66,12 +74,12 @@ export function kindParticipates(kind: IconKind, policy: KindPolicy): boolean {
  *  too — the SAME participate-by-default rule as kindPolicy. Opting a surface
  *  OUT is explicit (and disabling one auto-restores it on the next apply,
  *  RESTORE-FIRST). */
-export const DEFAULT_SURFACES: Surfaces = { taskbar: true, startMenu: true }
+export const DEFAULT_SURFACES: Surfaces = { taskbar: true, startMenu: true, explorer: true }
 
 /** The `surfaces` legs — a CLOSED whitelist (G11): only these keys exist, any
  *  other key in a `surfaces` object is dropped on read (additive tolerance,
  *  mirroring unknown kind buckets). */
-const SURFACE_KEYS = ['taskbar', 'startMenu'] as const satisfies readonly (keyof Surfaces)[]
+const SURFACE_KEYS = ['taskbar', 'startMenu', 'explorer'] as const satisfies readonly (keyof Surfaces)[]
 
 /** Whether an item on `surface` participates under `surfaces`. The desktop is
  *  NEVER gated here — it is the app's core promise; kindPolicy governs it alone. */
@@ -83,6 +91,8 @@ export function surfaceParticipates(surface: Surface, surfaces: Surfaces): boole
       return surfaces.taskbar
     case 'startMenu':
       return surfaces.startMenu
+    case 'explorer':
+      return surfaces.explorer
   }
 }
 

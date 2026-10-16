@@ -864,6 +864,7 @@ export function IconsPanel() {
         // same legs Apply uses — an opted-out surface is never even mentioned.
         taskbarCount={state.surfaces.taskbar ? items.filter((i) => i.surface === 'taskbar' && i.styleable).length : 0}
         startMenuCount={state.surfaces.startMenu ? items.filter((i) => i.surface === 'startMenu' && i.styleable).length : 0}
+        explorerCount={state.surfaces.explorer ? items.filter((i) => i.surface === 'explorer' && i.styleable).length : 0}
         multiUser={state.activeUserProfiles > 1}
         onAgree={() => {
           // v2 records that the machine-wide arrow disclosure was shown; keep

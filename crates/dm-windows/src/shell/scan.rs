@@ -130,9 +130,43 @@ fn scan_blocking() -> PortResult<Vec<DesktopItem>> {
             items.extend(synthesize_appx_items(&walked, &entries, &programs));
         }
     }
+    // Explorer folders (ADR-0004 D7, amendment 2026-10-16): every non-excluded folder under EVERY
+    // FIXED DRIVE becomes a `Folder` item on the `explorer` surface, styled via `desktop.ini`
+    // exactly like a desktop folder. Best-effort per-root doctrine: a missing/locked-down root
+    // NARROWS the surface instead of failing the scan. [WINDOWS-VERIFY] runtime.
+    let mut explorer_extensions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let mut explorer_items = Vec::new();
+        // ONE shared BFS across every root (not a per-root walk): a single queue means a huge
+        // `C:\` can never consume the whole folder cap before `D:\` is seen — depth-0 roots are
+        // interleaved in enqueue order.
+        walk_explorer_folders(
+            &known_folders::explorer_folder_roots(),
+            &mut explorer_items,
+            &mut explorer_extensions,
+        );
+        // The DESKTOP surface already styles the top-level folders on the desktop, and a drive walk
+        // descends into the Desktop folder too — the same folder would otherwise surface twice
+        // under one `ItemId` (once desktop, once explorer). Keep the FIRST (the desktop-labeled
+        // item) and drop the explorer duplicate so the ledger/commit never address one folder twice.
+        let seen: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
+        items.extend(explorer_items.into_iter().filter(|i| !seen.contains(&i.path)));
+    }
+    // Explorer DRIVES (ADR-0004 D7): the surface's other half. [WINDOWS-VERIFY] runtime.
+    items.extend(explorer_drive_items());
+    // File TYPES (ADR-0004 D7 amendment 2026-10-16): one `FileType` item per ProgId the drive
+    // walks SAW a file for — every type except images, exactly the `.ext` set collected by the
+    // folder walk above, so a type with no file anywhere visible is never styled blind. Emitted
+    // LAST so the shared per-scan preview budget is spent on desktop/taskbar/folder items first.
+    items.extend(explorer_file_type_items(&explorer_extensions));
     // Oracle sorts by name, current-culture case-insensitive; ASCII-lowercase is the closest
     // portable approximation and is corrected on the Windows box if a locale diff surfaces.
-    items.sort_by_key(|item| item.name.to_lowercase());
+    // FILE TYPES sort to the END (second key): their `.ext` names would otherwise sort FIRST
+    // (ASCII `.` precedes every letter) and consume the shared per-scan preview budget ahead of
+    // the desktop/taskbar/folder items — the exact starvation the BFS walk order exists to
+    // prevent. Every other item keeps the oracle's pure name order (FileType is a new kind, so no
+    // existing position moves), and the emission order above is what survives for equal keys.
+    items.sort_by_key(|item| (item.kind == ItemKind::FileType, item.name.to_lowercase()));
     Ok(items)
 }
 
@@ -320,9 +354,358 @@ fn walk_dir(
     }
 }
 
+/// Caps for the `explorer` folder walk (ADR-0004 D7, rebased for the ALL-DRIVES walk in the
+/// 2026-10-16 amendment). The depth cap is measured **from a drive root**, so the old
+/// profile-relative depth 8 re-bases to 10 (the profile itself sits at depth 2 under `C:\`); the
+/// count cap rises with it (5000) because drive-wide content replaces profile content. Both stay
+/// the hard backstop against a freak tree stalling the scan or emitting tens of thousands of
+/// items — the denylist below still cuts `target`/`node_modules` first, so real browsable content
+/// is what reaches the cap. Tunable.
+const EXPLORER_MAX_DEPTH: u32 = 10;
+const EXPLORER_MAX_FOLDERS: usize = 5000;
+
+/// Drive-root children the walk never descends into (ADR-0004 D7 amendment 2026-10-16): trees the
+/// current user cannot write `desktop.ini` into without elevation. Emitting them would only
+/// produce doomed per-item apply failures (access denied), so they are cut whole — styling them
+/// needs a HOT-tier UAC decision that was explicitly NOT taken. Case-insensitive; the attribute
+/// gate already cuts the Hidden/System ones (`Windows`, `$Recycle.Bin`, …) — they are listed too
+/// as belt-and-suspenders for boxes that lost those attributes.
+const EXPLORER_PROTECTED_ROOTS: &[&str] = &[
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "Windows",
+    "$Recycle.Bin",
+    "System Volume Information",
+    "Recovery",
+    "MSOCache",
+    "PerfLogs",
+    "Documents and Settings",
+];
+
+/// Container-only directory names: descended into but NEVER styled as items. `Users` is the case
+/// that matters — `C:\Users` itself is ACL-protected (writing `desktop.ini` there is admin-only),
+/// yet the profile lives beneath it, so the walk must pass through. Same name deeper on a data
+/// drive is skipped as an item too (one unstyled folder name beats a doomed write).
+const EXPLORER_CONTAINER_ONLY: &[&str] = &["Users"];
+
+/// Directory names that are build/VCS/cache/package artifacts — never styled. Writing
+/// `desktop.ini` into them is catastrophic for perf + restore and invisible to the user anyway.
+/// Case-insensitive. The DOT-prefixed entries are additionally caught wholesale by the
+/// dot-prefix gate in the walk (belt-and-suspenders); the explosive build trees (`node_modules`,
+/// `target`, `bin`, `obj`, …) are cut by name so they never fill the count cap. The DEPTH cap is
+/// the backstop for arbitrary tooling internals: the owner box's
+/// `Documents\godot\…\android-sdk\…\res\values-*` explosion lives at depth 9 — under this cap it
+/// is never reached, so no budget is spent there and no `desktop.ini` lands in the SDK.
+const EXPLORER_DENYLIST: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "bin",
+    "obj",
+    "__pycache__",
+    "venv",
+    "packages",
+    // Tooling SDKs — a user never browses these for icons and they hold deep explosions
+    // (`android-sdk\cmdline-tools\latest\lib\zipflinger`, NDK python stdlib, …). Cutting the root
+    // keeps every `desktop.ini` out of the SDK (owner box: `Documents\godot\…\android-sdk`).
+    "android-sdk",
+    "cmdline-tools",
+    "platform-tools",
+    "build-tools",
+    "system-images",
+    ".git",
+    ".svn",
+    ".hg",
+    ".venv",
+    ".cache",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".gradle",
+    "AppData",
+];
+
+/// Emits the FOLDER items for the `explorer` surface across `roots` — every fixed-drive root, one
+/// shared breadth-first queue (ADR-0004 D7; amendment 2026-10-16). Unlike the Start menu (whose
+/// folders are containers only), a folder here is BOTH an item (its `desktop.ini` gets styled)
+/// AND a container (we descend to its subfolders). Files are never emitted as items — but their
+/// EXTENSIONS are collected into `extensions` (lowercase, no dot), the `.ext` universe the
+/// file-type pass later resolves to ProgIds: a type is only ever styled when the user actually
+/// HAS files of it on a walked drive. Best-effort: an unreadable subfolder is skipped, never a
+/// scan failure.
+///
+/// **Breadth-first, not depth-first.** The per-scan icon-preview budget (`SCAN_SOURCE_BUDGET` in
+/// the host) is SHARED across every surface and, once exhausted, turns the remaining items
+/// `Icons_Reason_TooMany` → not-styleable. A DFS would dive into the first huge subtree — the
+/// owner box: `Documents\godot\…\android-sdk\…\res\values-*`, thousands of dirs — and spend the
+/// whole budget there, starving the profile's LATER content folders (Pictures, Music, Videos, …)
+/// of a preview. BFS emits the shallow, browsable content FIRST, so the budget is spent on what
+/// the user actually browses and only ever overflows onto deep tooling junk (fine to leave
+/// not-styleable). The depth cap additionally cuts a depth-11+ explosion outright. Every root is
+/// seeded at depth 0 into the ONE queue, so a giant `C:\` never eats the whole count cap before
+/// `D:\` gets seen (the roots would otherwise be walked sequentially, last one starved).
+fn walk_explorer_folders(
+    roots: &[std::path::PathBuf],
+    items: &mut Vec<DesktopItem>,
+    extensions: &mut std::collections::HashSet<String>,
+) {
+    let mut queue: std::collections::VecDeque<(std::path::PathBuf, u32)> =
+        std::collections::VecDeque::new();
+    for root in roots {
+        queue.push_back((root.clone(), 0));
+    }
+    let mut count = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        if count >= EXPLORER_MAX_FOLDERS {
+            break;
+        }
+        // At the depth ceiling: don't even read this dir's children (they'd be depth+1 > cap).
+        if depth >= EXPLORER_MAX_DEPTH {
+            continue;
+        }
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                log::warn!("explorer scan skipped unreadable folder {}: {e}", dir.display());
+                continue;
+            }
+        };
+        for entry in rd.flatten() {
+            if count >= EXPLORER_MAX_FOLDERS {
+                break;
+            }
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_entry(&file_name) {
+                continue;
+            }
+            // The explorer surface styles FOLDERS (+ drives and file TYPES, both enumerated
+            // separately); a loose file is never itself an item, but its EXTENSION feeds the
+            // file-type pass (ADR-0004 D7 amendment 2026-10-16).
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(ext) = std::path::Path::new(&file_name).extension() {
+                    extensions.insert(ext.to_string_lossy().to_lowercase());
+                }
+                continue;
+            }
+            // Dot-prefixed dirs (`.git`, `.bun`, `.vscode`, `.cargo`, `.venv`, `.cache`, `.local`, …)
+            // are the Windows convention for tooling/package caches — dot-prefix is NOT an attribute
+            // hidden bit, so the attribute gate below misses them. They hold thousands of store
+            // subfolders that blow the preview budget and starve every REAL folder past them into
+            // `Icons_Reason_TooMany` → not-styleable (owner-box `.bun\install\cache` report
+            // 2026-10-13). Skip them wholesale — a user never browses them for icons.
+            if file_name.starts_with('.')
+                || EXPLORER_DENYLIST.iter().any(|d| file_name.eq_ignore_ascii_case(d))
+            {
+                continue;
+            }
+            // Admin-only trees: never styled, never descended (ADR-0004 D7 amendment 2026-10-16).
+            if EXPLORER_PROTECTED_ROOTS.iter().any(|d| file_name.eq_ignore_ascii_case(d)) {
+                continue;
+            }
+            let path = entry.path();
+            let path_str = match path.to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            // Attribute exclusions: hidden, system, or a reparse point. Hidden/System covers
+            // `AppData` and app-managed trees (what Explorer hides by default — the owner never
+            // sees them). Reparse is skipped so we never write `desktop.ini` *through* a
+            // junction/symlink and never cycle (OneDrive, redirected Documents). An unreadable
+            // attribute read fails closed.
+            match crate::shell::attrs::get(&path_str) {
+                Ok(a) => {
+                    if a & (crate::shell::attrs::HIDDEN | crate::shell::attrs::SYSTEM) != 0 {
+                        continue;
+                    }
+                    if a & crate::shell::attrs::REPARSE_POINT != 0 {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+            // Container-only roots (the profile's `Users` parent): descended, never emitted.
+            if !EXPLORER_CONTAINER_ONLY.iter().any(|d| file_name.eq_ignore_ascii_case(d)) {
+                count += 1;
+                items.push(DesktopItem {
+                    id: ItemId::from_source_path("filesystem", &path_str),
+                    name: display_name(&file_name, ItemKind::Folder),
+                    icon: read_icon_source(ItemKind::Folder, &path_str),
+                    path: path_str,
+                    kind: ItemKind::Folder,
+                    surface: ItemSurface::Explorer,
+                    parent: String::new(),
+                    state: ItemState::Ready,
+                    requires_explicit_consent: false,
+                    status_message: None,
+                });
+            }
+            // Enqueue for descent (breadth-first): processed AFTER every already-queued shallower
+            // folder, so a deep subtree never preempts shallow content for the count cap / budget.
+            queue.push_back((path, depth + 1));
+        }
+    }
+}
+
+/// The explorer surface's DRIVE half (ADR-0004 D7): one `Drive` item per visible FIXED root, each
+/// styled via its per-user registry `DefaultIcon` (routed by `kind`, distinct from the folder
+/// `desktop.ini` writer). A drive's display name comes from the shell exactly like the bin /
+/// namespace items ("SYSTEM (C:)"); an unresolvable shell name falls back to `(C:)` rather than
+/// dropping the drive. `icon` stays `None` by design — the effective icon is a LIVE shell read at
+/// extract time (`shell_item_image`), never a scan-time snapshot. Best-effort: an empty fixed-drive
+/// enumeration just narrows the surface (the `visible_fixed_drives` test owns the on-box proof).
+/// [WINDOWS-VERIFY] runtime.
+fn explorer_drive_items() -> Vec<DesktopItem> {
+    known_folders::visible_fixed_drives()
+        .into_iter()
+        .map(|drive_path| {
+            let letter = drive_path.chars().next().unwrap_or('?');
+            let name = shell_display_name(&drive_path)
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| format!("({letter}:)"));
+            DesktopItem {
+                id: ItemId::from_source_path("filesystem", &drive_path),
+                name,
+                path: drive_path,
+                kind: ItemKind::Drive,
+                surface: ItemSurface::Explorer,
+                parent: String::new(),
+                icon: None,
+                state: ItemState::Ready,
+                requires_explicit_consent: false,
+                status_message: None,
+            }
+        })
+        .collect()
+}
+
 /// The shell parsing name for the Recycle Bin (the canonical CLSID form; the oracle's
 /// `shell:RecycleBinFolder` resolves to the same folder).
 const RECYCLE_BIN_PARSING: &str = "::{645FF040-5081-101B-9F08-00AA002F954E}";
+
+/// The `explorer` surface's FILE-TYPE half (ADR-0004 D7 amendment 2026-10-16): one `FileType`
+/// item per ProgId the drive walk actually SAW files of, filtered to the types whose icon can be
+/// restyled. The type set comes from `extensions` (collected by [`walk_explorer_folders`]), never
+/// from enumerating the registry wholesale — a type with no file anywhere the user browses is
+/// never styled blind, and the item count stays proportional to real content.
+///
+/// Gates, in order (each one is part of the amendment's contract, not an optimization):
+/// 1. **Images are never restyled** — owner carve-out: `PerceivedType = image` OR membership in
+///    [`IMAGE_EXTENSIONS`], evaluated **per ProgId**: one `DefaultIcon` serves every extension of
+///    an association, so a ProgId reachable from even ONE image extension is untouchable. A
+///    thumbnail/preview type keeps its native identity.
+/// 2. **Extension → ProgId** (`HKCR\<ext>\(Default)`), and the ProgId must pass the same
+///    single-key-component validation apply uses (never a `\`-bearing association name).
+/// 3. **One item per ProgId** — extensions sharing an association (`.htm`/`.html`) share ONE
+///    registry value, so they must be ONE item; two writers of one value would CAS-conflict
+///    forever.
+/// 4. **The type must HAVE a `DefaultIcon`** — nothing to style otherwise (`.lnk`-class types
+///    resolve through their target instead, so they simply fall out here).
+/// 5. **Per-file types are skipped**: a `DefaultIcon` carrying an unexpanded `%1`/`%L`/`%l`
+///    resolves to *the file itself* (`exefile` and friends) — a type-level override there would
+///    collapse every executable's individual icon into ONE glyph. This is the honest floor of
+///    "all program icons": per-program identity lives inside each `.exe` (ADR-0024's running-
+///    window limit, same platform fact) and there is no per-file lever.
+///
+/// `icon` carries the type's effective `DefaultIcon` resource, captured at scan so extraction and
+/// the styled-residue provenance guard work off the same location the shell shows.
+/// Best-effort per-type doctrine: any failure skips that type, never the scan. [WINDOWS-VERIFY]
+/// runtime (the merged HKCR reads + `PerceivedType`).
+fn explorer_file_type_items(extensions: &std::collections::HashSet<String>) -> Vec<DesktopItem> {
+    use winreg::enums::HKEY_CLASSES_ROOT;
+    use winreg::RegKey;
+    if extensions.is_empty() {
+        return Vec::new();
+    }
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let mut sorted: Vec<&String> = extensions.iter().collect();
+    sorted.sort(); // deterministic emission order (the item list is name-sorted later anyway)
+
+    // Pass 1 — resolve every seen extension to its ProgId and mark the image-reachable ones.
+    // The image carve-out runs PROGID-LEVEL on purpose: one `DefaultIcon` value serves every
+    // extension of a ProgId, so if a SINGLE image extension reaches it (however odd a mapping),
+    // styling it would restyle image files too — the carve-out must win over the per-extension
+    // view. Extensions without a valid association never enter the candidate list.
+    let mut candidates: Vec<(String, String, bool)> = Vec::new(); // (ext, prog_id, is_image_reachable)
+    for ext in sorted {
+        let static_image = IMAGE_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e));
+        let assoc = match hkcr.open_subkey(format!(".{ext}")) {
+            Ok(k) => k,
+            Err(_) => continue, // no association at all → nothing to style
+        };
+        // The systematic image filter: `PerceivedType` covers image types the static list misses.
+        let perceived_image = assoc
+            .get_value::<String, _>("PerceivedType")
+            .map(|p| p.eq_ignore_ascii_case("image"))
+            .unwrap_or(false);
+        let prog_id = match assoc.get_value::<String, _>("") {
+            Ok(p) if !p.trim().is_empty() => p,
+            _ => continue,
+        };
+        if crate::apply::filetype::prog_id_from_path(&prog_id).is_err() {
+            continue;
+        }
+        candidates.push((ext.to_string(), prog_id, static_image || perceived_image));
+    }
+
+    // Pass 2 — one item per non-image ProgId, with the `DefaultIcon` gates.
+    let image_progs: std::collections::HashSet<String> = candidates
+        .iter()
+        .filter(|c| c.2)
+        .map(|c| c.1.to_lowercase())
+        .collect();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (ext, prog_id, _) in candidates {
+        let prog_key = prog_id.to_lowercase();
+        if image_progs.contains(&prog_key) {
+            continue; // shares its icon value with an image type — never restyled
+        }
+        if !seen.insert(prog_key) {
+            continue; // another extension of the SAME ProgId — one registry target, one item
+        }
+        let icon_key = match hkcr.open_subkey(format!(r"{prog_id}\DefaultIcon")) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        let value = match icon_key.get_value::<String, _>("") {
+            Ok(v) if !v.trim().is_empty() => v,
+            _ => continue,
+        };
+        if value.contains("%1") || value.contains("%L") || value.contains("%l") {
+            continue; // per-file type — styling it would flatten every file of the type (gate 5)
+        }
+        let (location, index) = crate::classify::parse_icon_location(&value);
+        if location.trim().is_empty() {
+            continue;
+        }
+        out.push(DesktopItem {
+            id: ItemId::from_source_path("filetype", &prog_id),
+            name: format!(".{ext}"),
+            path: prog_id,
+            kind: ItemKind::FileType,
+            surface: ItemSurface::Explorer,
+            parent: String::new(),
+            icon: Some(IconRef { kind: icon_ref_kind(&location), location, index }),
+            state: ItemState::Ready,
+            requires_explicit_consent: false,
+            status_message: None,
+        });
+    }
+    out
+}
+
+/// Extensions whose icons are NEVER restyled — the owner's explicit carve-out from the D7
+/// amendment (2026-10-16: "todos los iconos de archivo **menos los de imágenes**"). Belt and
+/// suspenders over the systematic `PerceivedType = image` check: a thumbnail/preview type keeps
+/// its native identity, and some image types carry no perceived type at all. Case-insensitive.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "jpe", "jfif", "gif", "bmp", "dib", "ico", "cur", "ani", "apng",
+    "tif", "tiff", "wmf", "emf", "svg", "webp", "heic", "heif", "avif", "avifs", "tga",
+    "psd", "xcf", "dng", "cr2", "cr3", "nef", "orf", "rw2", "arw", "mrw", "raf", "pef",
+];
 
 /// The stylable System desktop-namespace CLSIDs (stable ItemId, CLSID GUID). The Recycle Bin is
 /// injected separately above (it has its own empty/full pair). The GUIDs are the canonical Windows
@@ -500,6 +883,212 @@ mod tests {
         let mut items = Vec::new();
         walk_root(&spec(surface, root, recurse, false), &mut items).unwrap();
         items
+    }
+
+    #[test]
+    fn the_explorer_walk_emits_folders_recurses_and_honors_exclusions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Visible folders: emitted AND descended into (a folder is both item + container).
+        touch(root, "Docs/a.txt");
+        touch(root, "Docs/Sub/b.txt");
+        // A denylist dir: skipped entirely, including its descent (the repo's target/node_modules).
+        touch(root, "node_modules/dep/c.txt");
+        // A loose file at the root: never an explorer ITEM (its `.txt` extension, however, feeds
+        // the file-type pass — ADR-0004 D7 amendment 2026-10-16).
+        touch(root, "loose.txt");
+        // A hidden folder (attribute-gated, like AppData): skipped.
+        let hidden = root.join("Secret");
+        std::fs::create_dir_all(&hidden).unwrap();
+        crate::shell::attrs::set(&hidden.to_string_lossy(), crate::shell::attrs::HIDDEN).unwrap();
+
+        let mut items = Vec::new();
+        let mut exts = std::collections::HashSet::new();
+        walk_explorer_folders(&[root.to_path_buf()], &mut items, &mut exts);
+
+        let paths: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
+        let p = |s: &str| root.join(s).to_string_lossy().into_owned();
+        // Emitted: the visible child folder AND the descended subfolder.
+        assert!(paths.contains(&p("Docs")), "visible folder emitted");
+        assert!(paths.contains(&p("Docs\\Sub")), "subfolder emitted via descent");
+        // Skipped: the denylist dir + its descent, the hidden folder, and the loose file.
+        assert!(!paths.contains(&p("node_modules")), "denylist dir skipped");
+        assert!(!paths.contains(&p("node_modules\\dep")), "denylist descent skipped");
+        assert!(!paths.contains(&p("Secret")), "hidden folder skipped");
+        assert!(!paths.contains(&p("loose.txt")), "files are never explorer items");
+        // ...but their extensions ARE collected for the file-type pass (amendment 2026-10-16):
+        // seen files feed it, denylisted/hidden ones are never reached (same budget posture).
+        assert!(exts.contains("txt"), "seen extension collected for file types");
+        assert!(!exts.contains("c"), "files under a denylisted tree never widen the type set");
+        // Every emitted item is a Folder on the explorer surface.
+        assert!(items
+            .iter()
+            .all(|i| i.kind == ItemKind::Folder && i.surface == ItemSurface::Explorer));
+    }
+
+    #[test]
+    fn the_scan_emits_one_drive_item_per_fixed_root() {
+        // The drive half of the explorer surface: one item per `visible_fixed_drives` root, all
+        // carrying the shape the apply pipeline keys off — `kind=Drive` (routes to the per-user
+        // registry writer, not the `desktop.ini` one), `surface=Explorer` (governed by the
+        // explorer toggle, never rendered in the canvas), a stable filesystem id, and NO scan-time
+        // icon snapshot (the drive's effective icon is read live at extract time).
+        let drives = explorer_drive_items();
+        let roots = known_folders::visible_fixed_drives();
+        assert_eq!(drives.len(), roots.len(), "one item per fixed root");
+        assert!(drives.iter().any(|d| d.path == "C:\\"), "the system drive is styled");
+        for item in &drives {
+            assert_eq!(item.kind, ItemKind::Drive);
+            assert_eq!(item.surface, ItemSurface::Explorer);
+            assert!(item.path.ends_with(":\\"), "bare drive root, got {}", item.path);
+            assert_eq!(item.id, ItemId::from_source_path("filesystem", &item.path));
+            assert!(!item.name.trim().is_empty(), "every drive shows a name");
+            assert_eq!(item.state, ItemState::Ready);
+            assert!(item.icon.is_none(), "drive icon source is live, not scan-time");
+        }
+    }
+
+    #[test]
+    fn protected_roots_never_emit_or_descend_and_users_is_container_only() {
+        // The all-drives walk (ADR-0004 D7 amendment 2026-10-16) must NOT offer trees the current
+        // user cannot write `desktop.ini` into (each emitted one would only become a doomed
+        // per-item apply failure), while still walking THROUGH the ACL-protected `Users` parent to
+        // reach the profile beneath it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(root, "Program Files/App/readme.txt"); // protected → no emit, no descent
+        touch(root, "Windows/System32/x.txt"); // protected (also Hidden/System-attribute gated)
+        touch(root, "Users/Melu/Docs/report.pjy"); // container-only → descended, never an item
+        touch(root, "Music/note.txt"); // ordinary folder → styled as usual
+
+        let mut items = Vec::new();
+        let mut exts = std::collections::HashSet::new();
+        walk_explorer_folders(&[root.to_path_buf()], &mut items, &mut exts);
+
+        let paths: std::collections::HashSet<String> = items.iter().map(|i| i.path.clone()).collect();
+        let p = |s: &str| root.join(s).to_string_lossy().into_owned();
+        assert!(!paths.contains(&p("Program Files")), "protected root not styled");
+        assert!(!paths.contains(&p("Program Files\\App")), "protected root not descended");
+        assert!(!paths.contains(&p("Windows")), "protected root not styled");
+        assert!(!paths.contains(&p("Windows\\System32")), "protected root not descended");
+        assert!(!paths.contains(&p("Users")), "`Users` itself is never styled");
+        assert!(paths.contains(&p("Users\\Melu")), "`Users` is still descended to reach the profile");
+        assert!(paths.contains(&p("Users\\Melu\\Docs")), "profile content is styled");
+        assert!(paths.contains(&p("Music")), "ordinary folders are styled");
+        // Files behind a protected root never widen the type set either (never visited).
+        assert!(!exts.contains("x"), "protected-descent files are unseen");
+        assert!(exts.contains("pjy"), "profile files behind `Users` feed the type set");
+        assert!(exts.contains("txt"), "ordinary folders feed the type set");
+    }
+
+    /// Builds (and later scrubs) a per-user association fixture under `HKCU\Software\Classes` —
+    /// the exact override layer the file-type walk reads through the merged `HKCR` view, so the
+    /// gates can be proven WITHOUT touching any real association or needing elevation.
+    struct ProgIdFixture {
+        keys: Vec<String>,
+    }
+
+    impl ProgIdFixture {
+        fn new() -> Self {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let mut fx = Self { keys: Vec::new() };
+            for k in [
+                r"Software\Classes\.dmktest9f3ca",
+                r"Software\Classes\.dmktest9f3cb",
+                r"Software\Classes\.dmktest9f3cc",
+                r"Software\Classes\.dmktest9f3cd",
+                r"Software\Classes\DeskMakeoverTest.Type9f3c",
+                r"Software\Classes\DeskMakeoverTest.PerFile9f3c",
+                r"Software\Classes\DeskMakeoverTest.Image9f3c",
+            ] {
+                let _ = hkcu.delete_subkey_all(k);
+                fx.keys.push(k.to_string());
+            }
+            fx
+        }
+
+        /// `HKCU\<ext>` → ProgId, plus an optional `PerceivedType` on the extension key.
+        fn ext(&self, ext: &str, prog_id: &str, perceived: Option<&str>) {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(format!(r"Software\Classes\.{ext}")).unwrap();
+            key.set_value("", &prog_id).unwrap();
+            if let Some(p) = perceived {
+                key.set_value("PerceivedType", &p).unwrap();
+            }
+        }
+
+        /// `HKCU\<prog>\DefaultIcon` → raw value.
+        fn icon(&self, prog_id: &str, raw: &str) {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu.create_subkey(format!(r"Software\Classes\{prog_id}\DefaultIcon")).unwrap();
+            key.set_value("", &raw).unwrap();
+        }
+    }
+
+    impl Drop for ProgIdFixture {
+        fn drop(&mut self) {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            for k in &self.keys {
+                let _ = hkcu.delete_subkey_all(k);
+            }
+        }
+    }
+
+    #[test]
+    fn file_type_items_are_one_per_progid_and_never_images_or_per_file_types() {
+        // The D7 amendment's contract, gate by gate, against a LIVE merged-HKCR read:
+        //   a normal type → emitted once for two extensions sharing its ProgId (case-insensitive),
+        //   a `%1` per-file type → never (it would flatten every executable into one glyph),
+        //   `PerceivedType=image` → never (the systematic image carve-out),
+        //   `.exe`/`.png` (real machine associations) → never (static list + the `%1` gate),
+        //   an unassociated extension → never.
+        // [WINDOWS-VERIFY] runtime (merged HKCR through HKCU `Software\Classes`).
+        let fx = ProgIdFixture::new();
+        fx.ext("dmktest9f3ca", "DeskMakeoverTest.Type9f3c", None);
+        fx.ext("dmktest9f3cb", "deskmakovertest.type9f3c", None); // same ProgId, other case
+        fx.icon("DeskMakeoverTest.Type9f3c", r"C:\Windows\System32\shell32.dll,3");
+        fx.ext("dmktest9f3cc", "DeskMakeoverTest.PerFile9f3c", None);
+        fx.icon("DeskMakeoverTest.PerFile9f3c", "%1");
+        fx.ext("dmktest9f3cd", "DeskMakeoverTest.Image9f3c", Some("image"));
+        fx.icon("DeskMakeoverTest.Image9f3c", r"C:\Windows\System32\imageres.dll,-109");
+
+        let exts: std::collections::HashSet<String> = ["dmktest9f3ca", "dmktest9f3cb", "dmktest9f3cc", "dmktest9f3cd", "dmktest9f3cz", "exe", "png"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // An empty set emits nothing (no files seen → no type is ever styled blind).
+        assert!(explorer_file_type_items(&std::collections::HashSet::new()).is_empty());
+
+        let items = explorer_file_type_items(&exts);
+        assert_eq!(items.len(), 1, "exactly the one styleable type");
+        let item = &items[0];
+        assert_eq!(item.kind, ItemKind::FileType);
+        assert_eq!(item.surface, ItemSurface::Explorer);
+        assert_eq!(item.path, "DeskMakeoverTest.Type9f3c", "path carries the ProgId");
+        assert!(!item.path.contains('\\'), "a ProgId is one key component");
+        assert_eq!(item.name, ".dmktest9f3ca", "first extension seen labels the type");
+        assert_eq!(item.id, ItemId::from_source_path("filetype", &item.path), "filetype id namespace");
+        assert_eq!(item.state, ItemState::Ready);
+        assert!(item.parent.is_empty());
+        assert!(!item.requires_explicit_consent, "explorer items ride the surface toggle");
+        let icon = item.icon.as_ref().expect("the type's DefaultIcon is captured at scan");
+        assert_eq!(icon.location, r"C:\Windows\System32\shell32.dll");
+        assert_eq!(icon.index, 3);
+        assert_eq!(icon.kind, IconSourceKind::ExecutableResource, "dll icon is a resource");
+
+        // Belt-and-suspenders: no emitted item may name the per-file or the image ProgId.
+        for i in &items {
+            assert!(!i.path.eq_ignore_ascii_case("DeskMakeoverTest.PerFile9f3c"));
+            assert!(!i.path.eq_ignore_ascii_case("DeskMakeoverTest.Image9f3c"));
+        }
     }
 
     #[test]
