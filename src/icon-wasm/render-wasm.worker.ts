@@ -102,8 +102,8 @@ async function handleBake(msg: BakeMsg): Promise<void> {
   try {
     const renderer = await rendererReady
     await arrowReady
-    if (!renderer.hasSource(msg.id)) return fail()
-    const rgba = renderer.render(msg.id, msg.config, msg.isShortcut, msg.showOriginal ?? false, MASTER_SIZE, msg.opts)
+    if (!renderer.hasSource(msg.skey)) return fail()
+    const rgba = renderer.render(msg.skey, msg.config, msg.isShortcut, msg.showOriginal ?? false, MASTER_SIZE, msg.opts)
     if (!rgba) return fail()
     const canvas = new OffscreenCanvas(MASTER_SIZE, MASTER_SIZE)
     canvas.getContext('2d')!.putImageData(new ImageData(rgba, MASTER_SIZE, MASTER_SIZE), 0, 0)
@@ -146,8 +146,10 @@ async function drainRenders(): Promise<void> {
     const batch = [...pendingRenders.values()]
     pendingRenders.clear()
     for (const msg of batch) {
-      if (!renderer.hasSource(msg.id)) continue // not decoded yet — main re-requests after sourceReady
-      const rgba = renderer.render(msg.id, msg.config, msg.isShortcut, msg.showOriginal, msg.size, msg.opts)
+      // `skey` = content key (ONE decoded buffer per artwork, shared across
+      // items); `id` stays the item for the coalescing slot + reply identity.
+      if (!renderer.hasSource(msg.skey)) continue // not decoded yet — main re-requests after sourceReady
+      const rgba = renderer.render(msg.skey, msg.config, msg.isShortcut, msg.showOriginal, msg.size, msg.opts)
       if (!rgba) continue
       const bitmap = rgbaToBitmap(rgba, msg.size)
       const key = slotKeyOf(msg.id, msg.showOriginal, msg.size)
