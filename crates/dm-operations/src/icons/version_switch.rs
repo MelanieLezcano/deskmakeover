@@ -220,7 +220,7 @@ fn bake_and_apply(
                 Ok(png) => item_masters.push(BufferedMaster {
                     item_id: p.item.id.as_str().to_string(),
                     source_index: slot as u32,
-                    png_base64: png.clone(),
+                    png_base64: std::sync::Arc::new(png.clone()),
                 }),
                 // Record only the FIRST fault per item (mirrors the old break) and skip the item whole.
                 Err(e) => {

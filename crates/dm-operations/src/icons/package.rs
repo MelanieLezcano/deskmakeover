@@ -29,12 +29,15 @@ const MAX_MASTER_B64: usize = 4 * 1024 * 1024;
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 /// One master the frontend baked, addressed to an item + its source slot. `png_base64` is the
-/// standard-alphabet base64 of a straight-alpha RGBA PNG (the 256px bake master).
+/// standard-alphabet base64 of a straight-alpha RGBA PNG (the 256px bake master), held as a shared
+/// `Arc` so items with IDENTICAL masters share one allocation (the apply session dedups by content
+/// — see `IconApplySession::push`); at all-drives scale thousands of items carry the same stock
+/// glyph, and one heap copy per item is what the session's byte budget exists to prevent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferedMaster {
     pub item_id: String,
     pub source_index: u32,
-    pub png_base64: String,
+    pub png_base64: Arc<String>,
 }
 
 /// One item's packaged asset(s): the primary laddered ICO plus, for a two-state item, its paired
@@ -98,9 +101,9 @@ pub fn package_masters(masters: &[BufferedMaster]) -> Result<Vec<PackagedItem>> 
                 "icon item {id} has an empty-state master but no primary (source 0)"
             )));
         };
-        let primary_ico = bake_cached(&p.png_base64, &id, PRIMARY_INDEX, &mut baked)?;
+        let primary_ico = bake_cached(p.png_base64.as_str(), &id, PRIMARY_INDEX, &mut baked)?;
         let empty_ico = match empty.get(&id) {
-            Some(e) => Some(bake_cached(&e.png_base64, &id, EMPTY_INDEX, &mut baked)?),
+            Some(e) => Some(bake_cached(e.png_base64.as_str(), &id, EMPTY_INDEX, &mut baked)?),
             None => None,
         };
         packaged.push(PackagedItem { item_id: id, primary: primary_ico, empty: empty_ico });
@@ -188,7 +191,11 @@ mod tests {
     }
 
     fn master(id: &str, slot: u32, rgba: [u8; 4]) -> BufferedMaster {
-        BufferedMaster { item_id: id.into(), source_index: slot, png_base64: master_png(256, 256, rgba) }
+        BufferedMaster {
+            item_id: id.into(),
+            source_index: slot,
+            png_base64: Arc::new(master_png(256, 256, rgba)),
+        }
     }
 
     #[test]
@@ -272,7 +279,7 @@ mod tests {
             let bad = BufferedMaster {
                 item_id: "x".into(),
                 source_index: 0,
-                png_base64: master_png(w, h, [1, 2, 3, 255]),
+                png_base64: Arc::new(master_png(w, h, [1, 2, 3, 255])),
             };
             assert!(
                 package_masters(&[bad]).is_err(),
@@ -294,7 +301,7 @@ mod tests {
         let bad = BufferedMaster {
             item_id: "x".into(),
             source_index: 0,
-            png_base64: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+            png_base64: Arc::new(base64::engine::general_purpose::STANDARD.encode(&jpeg)),
         };
         assert!(package_masters(&[bad]).is_err(), "a JPEG master must be rejected (PNG only)");
     }
@@ -304,19 +311,23 @@ mod tests {
         let bad = BufferedMaster {
             item_id: "x".into(),
             source_index: 0,
-            png_base64: "A".repeat(MAX_MASTER_B64 + 1),
+            png_base64: Arc::new("A".repeat(MAX_MASTER_B64 + 1)),
         };
         assert!(package_masters(&[bad]).is_err(), "an over-cap payload must fail before decode");
     }
 
     #[test]
     fn rejects_an_undecodable_master() {
-        let bad = BufferedMaster { item_id: "x".into(), source_index: 0, png_base64: "not-base64!!".into() };
+        let bad = BufferedMaster {
+            item_id: "x".into(),
+            source_index: 0,
+            png_base64: Arc::new("not-base64!!".to_string()),
+        };
         assert!(package_masters(&[bad]).is_err());
         let not_png = BufferedMaster {
             item_id: "y".into(),
             source_index: 0,
-            png_base64: base64::engine::general_purpose::STANDARD.encode(b"not a png"),
+            png_base64: Arc::new(base64::engine::general_purpose::STANDARD.encode(b"not a png")),
         };
         assert!(package_masters(&[not_png]).is_err());
     }
