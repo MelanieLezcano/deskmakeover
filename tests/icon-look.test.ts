@@ -145,6 +145,38 @@ describe('migration chain mechanics', () => {
     expect(migrateIconLook({}, -1)).toBeNull()
     expect(migrateIconLook({}, ICON_LOOK_VERSION + 5)).toBeNull()
   })
+
+  test('v1 → v2 rewrites the Folder bucket off the plate-card shape (owner 2026-10-16)', () => {
+    // "las carpetas no se ven bien, la parte blanca no debería estar": a v1 recipe could carry a
+    // Folder-bucket `shape: 'Folder'` override — a plate-filled folder silhouette that reads as a
+    // WHITE card under the Mono + white-fallback look. v2 rewrites ONLY that one value.
+    type RawFolderPatch = { shape?: string; plateColor?: string | null }
+    const v1 = {
+      v: 1,
+      config,
+      kindPolicy: { ...DEFAULT_KIND_POLICY },
+      typeOverrides: {
+        Folder: { source: 'custom', patch: { shape: 'Folder', plateColor: '#EAD6A8' } },
+        File: { source: 'custom', patch: { shape: 'File' } },
+      },
+    }
+    const out = migrateIconLook(v1, 1) as {
+      typeOverrides: { Folder: { patch: RawFolderPatch }; File: { patch: RawFolderPatch } }
+    }
+    expect(out.typeOverrides.Folder.patch.shape).toBe('None') // the card is gone (passthrough)
+    expect(out.typeOverrides.Folder.patch.plateColor).toBe('#EAD6A8') // sibling fields survive
+    expect(out.typeOverrides.File.patch.shape).toBe('File') // other buckets untouched
+
+    // A Folder shape the USER chose deliberately (not the card) stays exactly as saved.
+    const samsung = migrateIconLook(
+      { v: 1, config, typeOverrides: { Folder: { source: 'custom', patch: { shape: 'Samsung' } } } },
+      1,
+    ) as { typeOverrides: { Folder: { patch: RawFolderPatch } } }
+    expect(samsung.typeOverrides.Folder.patch.shape).toBe('Samsung')
+
+    // parseIconLook routes a v1 payload through the chain — the saved-style ② load path.
+    expect(parseIconLook(JSON.stringify(v1))!.typeOverrides.Folder!.patch!.shape).toBe('None')
+  })
 })
 
 describe('wallpaper enum migrations (graduated MATERIAL_MIGRATION)', () => {

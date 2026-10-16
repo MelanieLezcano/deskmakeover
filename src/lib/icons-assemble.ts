@@ -55,15 +55,15 @@ export const BASE_CONFIGS: Record<string, ConfigDto> = {
 // diecut + blueprint deliberately ship NONE (the global look covers every type).
 export const PRESET_TYPE_OVERRIDES: Record<string, TypeOverrides> = {
   squircle: {
-    Folder: { source: 'custom', patch: { shape: 'Folder' } },
+    Folder: { source: 'custom', patch: { shape: 'None' } },
     File: { source: 'custom', patch: { shape: 'File' } },
   },
   porthole: {
-    Folder: { source: 'custom', patch: { shape: 'Folder' } },
+    Folder: { source: 'custom', patch: { shape: 'None' } },
     File: { source: 'custom', patch: { shape: 'Apple' } },
   },
   pixel: {
-    Folder: { source: 'custom', patch: { shape: 'Folder', plateColor: '#E7E7E5' } },
+    Folder: { source: 'custom', patch: { shape: 'None' } },
     File: { source: 'custom', patch: { shape: 'File', plateColor: '#E7E7E5' } },
   },
   creek: {
@@ -71,11 +71,11 @@ export const PRESET_TYPE_OVERRIDES: Record<string, TypeOverrides> = {
     File: { source: 'custom', patch: { shape: 'Samsung' } },
   },
   scrapbook: {
-    Folder: { source: 'custom', patch: { shape: 'Folder' } },
+    Folder: { source: 'custom', patch: { shape: 'None' } },
     File: { source: 'custom', patch: { shape: 'Pebble', plateColor: '#E7E7E5' } },
   },
   gleam: {
-    Folder: { source: 'custom', patch: { shape: 'Folder' } },
+    Folder: { source: 'custom', patch: { shape: 'None' } },
     File: { source: 'custom', patch: { shape: 'File' } },
   },
   glaze: {

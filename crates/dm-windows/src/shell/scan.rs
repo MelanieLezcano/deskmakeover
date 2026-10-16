@@ -324,6 +324,9 @@ fn walk_dir(
             if let Some(mut item) = reunify_wrapper(&path_str) {
                 item.surface = spec.surface;
                 item.parent = parent.to_string();
+                // A wrapper around an image/model must ALSO stay original (owner carve-out):
+                // the reunified item is a RegularFile, so the same gate applies.
+                keep_original_if_listed(&mut item);
                 items.push(item);
                 continue;
             }
@@ -339,7 +342,7 @@ fn walk_dir(
                 kind = ItemKind::AppxShortcut;
             }
         }
-        items.push(DesktopItem {
+        let mut item = DesktopItem {
             id: ItemId::from_source_path("filesystem", &path_str),
             name: display_name(&file_name, kind),
             icon: read_icon_source(kind, &path_str),
@@ -350,7 +353,25 @@ fn walk_dir(
             state: ItemState::Ready,
             requires_explicit_consent: false,
             status_message: None,
-        });
+        };
+        // Owner carve-outs (2026-10-16 / 2026-10-16b): images and 3D/print model files
+        // (`NEVER_RESTYLE_EXTENSIONS`) stay exactly as the shell shows them — no companion
+        // wrapper, no styling. See `keep_original_if_listed`.
+        keep_original_if_listed(&mut item);
+        items.push(item);
+    }
+}
+
+/// Marks a loose-file item that must stay EXACTLY as the shell shows it (owner carve-outs: images
+/// and 3D/print models). Non-styleable on purpose: the desktop's loose-file mechanism wraps the
+/// original in a styled companion `.lnk` and hides it — the very thing the owner vetoed twice
+/// ("que esté como en la versión original"). `PreviewOnly` (not `Ready`) is what makes
+/// `can_style()` false; the reason key is localized frontend-side. The item still rides the item
+/// list so the RESTORE-FIRST planner reverts any wrapper a previous version created.
+fn keep_original_if_listed(item: &mut DesktopItem) {
+    if item.kind == ItemKind::RegularFile && never_restyle_extension(&item.name) {
+        item.state = ItemState::PreviewOnly;
+        item.status_message = Some("Icons_Reason_KeptOriginal".to_string());
     }
 }
 
@@ -593,7 +614,7 @@ const RECYCLE_BIN_PARSING: &str = "::{645FF040-5081-101B-9F08-00AA002F954E}";
 ///
 /// Gates, in order (each one is part of the amendment's contract, not an optimization):
 /// 1. **Images are never restyled** — owner carve-out: `PerceivedType = image` OR membership in
-///    [`IMAGE_EXTENSIONS`], evaluated **per ProgId**: one `DefaultIcon` serves every extension of
+///    [`NEVER_RESTYLE_EXTENSIONS`], evaluated **per ProgId**: one `DefaultIcon` serves every extension of
 ///    an association, so a ProgId reachable from even ONE image extension is untouchable. A
 ///    thumbnail/preview type keeps its native identity.
 /// 2. **Extension → ProgId** (`HKCR\<ext>\(Default)`), and the ProgId must pass the same
@@ -630,7 +651,7 @@ fn explorer_file_type_items(extensions: &std::collections::HashSet<String>) -> V
     // view. Extensions without a valid association never enter the candidate list.
     let mut candidates: Vec<(String, String, bool)> = Vec::new(); // (ext, prog_id, is_image_reachable)
     for ext in sorted {
-        let static_image = IMAGE_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e));
+        let static_excluded = NEVER_RESTYLE_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e));
         let assoc = match hkcr.open_subkey(format!(".{ext}")) {
             Ok(k) => k,
             Err(_) => continue, // no association at all → nothing to style
@@ -647,7 +668,7 @@ fn explorer_file_type_items(extensions: &std::collections::HashSet<String>) -> V
         if crate::apply::filetype::prog_id_from_path(&prog_id).is_err() {
             continue;
         }
-        candidates.push((ext.to_string(), prog_id, static_image || perceived_image));
+        candidates.push((ext.to_string(), prog_id, static_excluded || perceived_image));
     }
 
     // Pass 2 — one item per non-image ProgId, with the `DefaultIcon` gates.
@@ -697,15 +718,30 @@ fn explorer_file_type_items(extensions: &std::collections::HashSet<String>) -> V
     out
 }
 
-/// Extensions whose icons are NEVER restyled — the owner's explicit carve-out from the D7
-/// amendment (2026-10-16: "todos los iconos de archivo **menos los de imágenes**"). Belt and
-/// suspenders over the systematic `PerceivedType = image` check: a thumbnail/preview type keeps
-/// its native identity, and some image types carry no perceived type at all. Case-insensitive.
-const IMAGE_EXTENSIONS: &[&str] = &[
+/// Extensions whose icons are NEVER restyled — the owner's explicit carve-outs (2026-10-16:
+/// "todos los iconos de archivo **menos los de imágenes**"; 2026-10-16b: "también los `.3mf`").
+/// Belt and suspenders over the systematic `PerceivedType = image` check: a thumbnail/preview type
+/// keeps its native identity, and some image types carry no perceived type at all. Case-insensitive.
+/// Applied to BOTH halves: the per-ProgId file TYPE (via [`explorer_file_type_items`]) and a loose
+/// FILE on a styled surface (the desktop's companion-wrapper mechanism must never wrap these).
+const NEVER_RESTYLE_EXTENSIONS: &[&str] = &[
+    // Images (owner carve-out).
     "png", "jpg", "jpeg", "jpe", "jfif", "gif", "bmp", "dib", "ico", "cur", "ani", "apng",
-    "tif", "tiff", "wmf", "emf", "svg", "webp", "heic", "heif", "avif", "avifs", "tga",
-    "psd", "xcf", "dng", "cr2", "cr3", "nef", "orf", "rw2", "arw", "mrw", "raf", "pef",
+    "tif", "tiff", "wmf", "emf", "svg", "svgz", "webp", "heic", "heif", "avif", "avifs", "tga",
+    "psd", "psb", "xcf", "dng", "cr2", "cr3", "nef", "orf", "rw2", "arw", "mrw", "raf", "pef",
+    "jxl", "jp2", "j2k", "dds", "exr", "hdr", "qoi",
+    // 3D / print models (owner 2026-10-16b: `.3mf` "que esté como en la versión original").
+    "3mf",
 ];
+
+/// Whether a file name's extension is on the never-restyle list (case-insensitive). The
+/// loose-file gate: an image or a 3D/print model is left exactly as the shell shows it.
+fn never_restyle_extension(file_name: &str) -> bool {
+    match crate::classify::extension_lower(file_name) {
+        Some(ext) => NEVER_RESTYLE_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(&ext)),
+        None => false,
+    }
+}
 
 /// The stylable System desktop-namespace CLSIDs (stable ItemId, CLSID GUID). The Recycle Bin is
 /// injected separately above (it has its own empty/full pair). The GUIDs are the canonical Windows
@@ -924,6 +960,56 @@ mod tests {
         assert!(items
             .iter()
             .all(|i| i.kind == ItemKind::Folder && i.surface == ItemSurface::Explorer));
+    }
+
+    #[test]
+    fn the_never_restyle_list_covers_images_and_3d_models() {
+        // Owner carve-outs 2026-10-16 (images) + 2026-10-16b (`.3mf`): the list is the ONE source
+        // the loose-file gate and the file-TYPE pass share, so a gap here is a gap in both.
+        for name in [
+            "gato.png", "foto.JPEG", "x.webp", "a.jxl", "b.psb", "c.svgz", "d.dds", "e.exr",
+            "modelo.3mf", "MODELO.3MF",
+        ] {
+            assert!(never_restyle_extension(name), "{name} must never be restyled");
+        }
+        for name in ["notas.txt", "app.exe", "lib.dll", "archivo.zip", "sin_extension", "punto."] {
+            assert!(!never_restyle_extension(name), "{name} stays styleable");
+        }
+    }
+
+    #[test]
+    fn loose_images_and_model_files_are_kept_original() {
+        // The desktop's loose-file mechanism wraps the original in a styled companion `.lnk` and
+        // hides it — exactly what the owner vetoed ("que esté como en la versión original"). An
+        // image or a 3D/print model must arrive NON-styleable, with its stable reason key.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(root, "gato.png");
+        touch(root, "foto.JPEG"); // case-insensitive
+        touch(root, "modelo.3mf");
+        touch(root, "notas.txt"); // a normal loose file keeps its Ready state
+        touch(root, "Docs/readme.txt");
+
+        let items = walk(root, ItemSurface::Desktop, false);
+        let by_name = |n: &str| {
+            items.iter().find(|i| i.name == n).unwrap_or_else(|| panic!("missing {n}"))
+        };
+        for n in ["gato.png", "foto.JPEG", "modelo.3mf"] {
+            let it = by_name(n);
+            assert_eq!(it.kind, ItemKind::RegularFile, "{n} stays a loose file (restore identity)");
+            assert_eq!(it.state, ItemState::PreviewOnly, "{n} must not be styleable");
+            assert!(!it.can_style(), "{n} must not be styleable");
+            assert_eq!(
+                it.status_message.as_deref(),
+                Some("Icons_Reason_KeptOriginal"),
+                "{n} carries the stable reason key"
+            );
+        }
+        let txt = by_name("notas.txt");
+        assert_eq!(txt.state, ItemState::Ready);
+        assert!(txt.can_style(), "an ordinary loose file is untouched by the gate");
+        assert!(txt.status_message.is_none());
+        assert_eq!(by_name("Docs").state, ItemState::Ready, "folders are unaffected");
     }
 
     #[test]

@@ -120,7 +120,7 @@ fn is_drive_absolute(path: &str) -> bool {
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
 }
 
-fn extension_lower(file_name: &str) -> Option<String> {
+pub(crate) fn extension_lower(file_name: &str) -> Option<String> {
     let dot = file_name.rfind('.')?;
     // A leading dot (dotfile) or trailing dot is not an extension.
     if dot == 0 || dot + 1 >= file_name.len() {
