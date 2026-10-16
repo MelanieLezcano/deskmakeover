@@ -315,6 +315,7 @@ export const en = {
   "Icons_Reason_StyledResidue": "Styled residue: the original-icon record is missing, so it was skipped to avoid stacking on the old style", // PENDING-RESX
   "Icons_Reason_ExtractFailed": "Couldn't read the icon: {0}", // PENDING-RESX
   "Icons_Reason_TooMany": "Too many icons: this scan's preview budget is used up, so some icons have no preview", // PENDING-RESX
+  "Icons_Reason_KeptOriginal": "Kept original: images and 3D/print files stay exactly as Windows shows them", // PENDING-RESX
   "Ink_Auto": "Auto",
   "Ink_Black": "Black",
   "Ink_White": "White",

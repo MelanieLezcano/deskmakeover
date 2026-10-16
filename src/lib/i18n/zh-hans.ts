@@ -317,6 +317,7 @@ export const zhHans: Record<keyof typeof en, string> = {
   "Icons_Reason_StyledResidue": "美化残留：原始图标记录缺失，已跳过以免在旧样式上叠加", // PENDING-RESX
   "Icons_Reason_ExtractFailed": "图标读取失败：{0}", // PENDING-RESX
   "Icons_Reason_TooMany": "图标过多：已达本次扫描的预览内存预算，部分图标暂无预览", // PENDING-RESX
+  "Icons_Reason_KeptOriginal": "保持原样：图片与 3D/打印文件按你的要求不改动图标", // PENDING-RESX
   "Ink_Auto": "自动",
   "Ink_Black": "黑",
   "Ink_White": "白",
