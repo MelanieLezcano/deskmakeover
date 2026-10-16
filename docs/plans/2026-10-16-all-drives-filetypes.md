@@ -146,3 +146,49 @@ pipelines that already meant "content-addressed".
   persistence (~1.3–4 items/s, tens of minutes). Correct and bounded; a batched ledger flush is a
   possible follow-up, out of this plan's scope.
 
+## Owner follow-up (2026-10-16b): images + `.3mf` stay original, folders lose the white card
+
+Three owner rulings after seeing the applied desktop, implemented as a scope extension of this plan:
+
+1. **Loose image files stay original.** The old behaviour wrapped a desktop `.png`/`.jpg` in a
+   styled companion `.lnk` with the original hidden — which the owner saw as "styled images", both
+   on the desktop and inside the Desktop folder in Explorer (the wrappers live there). Loose files
+   now hit the same never-restyle list as the file-TYPE half: `NEVER_RESTYLE_EXTENSIONS` marks them
+   `PreviewOnly` with `Icons_Reason_KeptOriginal`, so they render original AND ride the
+   RESTORE-FIRST set — the next apply removes the existing wrappers and un-hides the originals. The
+   desktop walk is the only surface that emits loose files (the Explorer walk emits folders only),
+   so this covers the whole reported surface.
+2. **`.3mf` joined the never-restyle list** (owner: "también los `.3mf`"), and the static image
+   list gained the formats that carry no `PerceivedType` (`jxl`, `jp2`, `j2k`, `dds`, `exr`, `hdr`,
+   `qoi`, `psb`, `svgz`). `PerceivedType = image` stays the systemic gate.
+3. **Folders never wear the plate card.** The `Folder` shape is a plate-filled folder silhouette —
+   under the Mono + white-fallback look it reads as a WHITE card ("la parte blanca no debería
+   estar"). The Folder bucket's ladder now uses the passthrough `None` shape (the tinted glyph
+   alone), the built-in preset ladders were updated, and the icon-recipe migration chain gained
+   **v1 → v2**, rewriting a stored `Folder: { shape: 'Folder' }` override to `None` — so an
+   already-applied recipe self-heals on the next apply (the saved-style ② load path runs the chain).
+
+Not in scope (still open): the `File` bucket keeps its document-card shape, and 3D/CAD siblings
+(`stl`, `obj`, `gcode`, …) are styleable unless the owner adds them to the list.
+
+### Third scale defect: the apply session's byte budget (2026-10-16b)
+
+Re-applying after the restore failed **silently in ~8 s** with
+`apply session exceeded its 268435456-byte cumulative budget` — the session's cumulative-base64
+cap (`MAX_SESSION_B64_BYTES = 256 MiB`) was sized for "a real desktop of a few hundred icons", and
+an all-drives apply carries ~5200 masters (~50 KiB each ⇒ ~260 MiB) even though the DISTINCT data
+is a few MiB (every folder shares the stock glyph). The frontend's apply catch turned it into a
+generic "couldn't apply" toast, so the desktop silently stayed native.
+
+Fixed in `IconApplySession`: identical payloads are stored ONCE and shared by `Arc`, and the
+accounted bytes are the DISTINCT payload bytes — so the cap measures the memory the session
+actually holds (audit F4 intact) instead of re-counting the same master per item.
+`package_masters`' content cache + `Arc<IcoAsset>` already dedup the post-commit side.
+
+On-box verification (2026-10-16b, after restore → apply): **5200 items committed in one pass**
+(Folder 5000 · Shortcut 112 · AppxShortcut 42 · FileType 40 · Drive 3 · RegularFile **2** — the
+images left the styleable set entirely), peak RSS **~205 MB** (vs ~3 GB before the earlier fixes),
+images visible with no companion wrappers, folders rendering without the plate card, and the
+persisted recipe carrying `Folder: { shape: "None" }`.
+
+
