@@ -1,7 +1,8 @@
 # Plan — Explorer module: folder + drive icons (ADR-0004 D7)
 
 **Date:** 2026-10-13 · **Branch:** `feat/taskbar-startmenu-surfaces` (continues) → lands as the
-Explorer module · **Status:** in progress
+Explorer module · **Status:** ✅ landed — **broadened 2026-10-16** (all fixed drives + file-type
+icons) per `2026-10-16-all-drives-filetypes.md`
 
 ## Goal
 
@@ -18,8 +19,12 @@ module" already scheduled in `specs/00-roadmap.md` and bounded by **ADR-0004 Dec
   `autorun.inf`). Same shape×colour engine, per-surface toggle, full restore.
 - **Out of scope (constitutional, ADR-0004 D7):** global file-type association icons
   (ProgId `DefaultIcon`). Permanently banned — association-hijack signature, un-restorable.
+  **SUPERSEDED 2026-10-16**: the owner lifted this ban for every file type EXCEPT images (and
+  never `%1` per-file types) — see `2026-10-16-all-drives-filetypes.md` and ADR-0004's amendment.
 - **Folder coverage:** every folder under the **user profile** (`FOLDERID_Profile`), subject to
   the exclusions below (owner chose "todas bajo tu perfil").
+  **BROADENED 2026-10-16** to every fixed-drive root by owner ruling ("al abrir el explorador
+  **todos** los iconos"), with protected-root and `Users` container-only guards — same plan doc.
 
 ### Folder exclusions (safety + perf — owner informed)
 
@@ -117,3 +122,11 @@ owner's repo (`target/`, `node_modules/` = tens of thousands of dirs). The explo
        owner confirmed the main view styled); the left tree can lag on a window opened before the
        post-apply Explorer restart, a known Windows icon-cache quirk — the shell itself already
        serves our icon at 16px (proven above).
+- [x] **2026-10-16 broadening (owner ruling)** — profile-only scope → **every fixed drive root**
+       (`explorer_folder_roots()` + one shared BFS so `C:\` can't starve `D:\`; protected roots
+       never emitted/descended, `Users` container-only; depth 10 / 5000 folders; extensions
+       collected during the walk feed the NEW file-type pass) + **file types except images**
+       (`ItemKind::FileType`, `apply/filetype.rs`, two-pass ProgId-level image gate, `%1`
+       per-file exclusion, File bucket kill switch). Budget survival: content-addressed
+       `dmicon://` keys (drop the item-id prefix) + frontend bake memoization + file types sorted
+       LAST so desktop/taskbar/folder previews keep priority. See the 2026-10-16 plan.

@@ -328,6 +328,18 @@ every existing port.
       After this pass the HKLM WebView2 `AdditionalBrowserArguments` dev value
       is deleted (value + key form) — the CDP bring-up existed only for this
       verification.
+    - **Status 2026-10-16 — owner asked "quiero que TODOS los iconos de la
+      taskbar se estilicen"; re-checked item by item, no decision changed**
+      (ADR-0024 amendment appended): every PIN is already stylable (pins +
+      Store pins via the Task 11 wrapper — the pinned row is built ONLY from
+      `User Pinned\TaskBar`, there is no third category); for a *pinned* app
+      the running button repainted to the styled pin icon after restart
+      (on-box, 2026-10-13); what genuinely stays native is only (a) UNPINNED
+      running apps' exe resources — no supported lever, Authenticode + the
+      reversibility envelope, never-list — and (b) system-tray glyphs each app
+      draws from its own resources. A desktop whose icons look native after
+      this date means the system is in RESTORED state (the uninstall-residue
+      test reverts everything): re-apply before judging coverage.
 
 ## [WINDOWS-VERIFY] field findings — live pass 2026-10-12 (owner box)
 
